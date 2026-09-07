@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bloompilot.local/contracts/device-control.v1.schema.json",
+  "title": "BloomPilot device control protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/pairRequest" },
+    { "$ref": "#/$defs/commandRequest" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "pairRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "client"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "pair" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "client": { "type": "string", "minLength": 1, "maxLength": 80 }
+      }
+    },
+    "commandRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "command", "payload"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "command" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "command": {
+          "enum": [
+            "setEnabled",
+            "setSpeed",
+            "setStraightLine",
+            "searchAddress",
+            "teleport",
+            "navigate",
+            "loop",
+            "multiStop",
+            "randomWalk",
+            "pause",
+            "resume",
+            "togglePause",
+            "stop",
+            "startSteps",
+            "startStepLoop",
+            "setStepFollow",
+            "toggleStepsPause",
+            "stopSteps",
+            "restore",
+            "addBookmark",
+            "deleteBookmark",
+            "addRoute",
+            "deleteRoute",
+            "beginCoordinateCapture",
+            "coordinateCaptureStatus",
+            "endCoordinateCapture",
+            "status"
+          ]
+        },
+        "payload": { "type": "object" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["v", "type", "id", "ok", "message"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "result" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "message": { "type": "string" },
+        "status": { "type": "object" }
+      }
+    }
+  }
+}

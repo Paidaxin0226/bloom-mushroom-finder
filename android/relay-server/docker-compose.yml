@@ -1,0 +1,95 @@
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    environment:
+      PORT: "8787"
+      PUBLIC_ORIGIN: "https://${RELAY_DOMAIN:-relay.example.com}"
+      TRUST_PROXY: "true"
+      HOST_DEVICE_PUBLIC_KEYS: "${HOST_DEVICE_PUBLIC_KEYS:?HOST_DEVICE_PUBLIC_KEYS is required}"
+      SESSION_TTL_MS: "${SESSION_TTL_MS:-21600000}"
+      MAX_SESSIONS: "${MAX_SESSIONS:-1000}"
+      MAX_SESSIONS_PER_HOST_DEVICE: "${MAX_SESSIONS_PER_HOST_DEVICE:-3}"
+      MAX_CONNECTIONS: "${MAX_CONNECTIONS:-2000}"
+      MAX_CONNECTIONS_PER_IP: "${MAX_CONNECTIONS_PER_IP:-30}"
+      MAX_UPGRADES_PER_IP_PER_MINUTE: "${MAX_UPGRADES_PER_IP_PER_MINUTE:-120}"
+      MAX_NEW_SESSIONS_PER_IP_PER_MINUTE: "${MAX_NEW_SESSIONS_PER_IP_PER_MINUTE:-20}"
+      MAX_HTTP_PER_IP_PER_MINUTE: "${MAX_HTTP_PER_IP_PER_MINUTE:-300}"
+      MAX_APPROVAL_REQUESTS_PER_MINUTE: "${MAX_APPROVAL_REQUESTS_PER_MINUTE:-5}"
+      MAX_WS_BUFFERED_BYTES: "${MAX_WS_BUFFERED_BYTES:-1048576}"
+      MAX_HTTP_REQUEST_BYTES: "${MAX_HTTP_REQUEST_BYTES:-65536}"
+      MAX_HTTP_RESPONSE_BYTES: "${MAX_HTTP_RESPONSE_BYTES:-262144}"
+      MAX_PENDING_HTTP: "${MAX_PENDING_HTTP:-32}"
+      HTTP_RESPONSE_TIMEOUT_MS: "${HTTP_RESPONSE_TIMEOUT_MS:-10000}"
+      WEBSOCKET_MAX_PAYLOAD_BYTES: "${WEBSOCKET_MAX_PAYLOAD_BYTES:-524288}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    volumes:
+      - ./cloudflared.yml:/etc/cloudflared/config.yml:ro
+      - "${CLOUDFLARED_CREDENTIALS_FILE}:/etc/cloudflared/credentials.json:ro"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["direct"]
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      RELAY_DOMAIN: "${RELAY_DOMAIN:-relay.example.com}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

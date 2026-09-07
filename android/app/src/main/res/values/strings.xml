@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gesture_service_description">讓已授權的 ADB 電腦直接送出地圖雙指縮放手勢，不開啟電腦鏡像視窗。</string>
+</resources>

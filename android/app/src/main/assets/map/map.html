@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="stylesheet" href="leaflet/leaflet.css">
+  <style>
+    html,body,#map{width:100%;height:100%;margin:0;background:#10131c;overflow:hidden;overscroll-behavior:none}
+    .leaflet-container{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#10131c;touch-action:none}
+    .leaflet-control-attribution{font-size:10px;background:rgba(15,18,27,.88)!important;color:#b7bed0}
+    .leaflet-control-attribution a{color:#8fa8ff}
+    .leaflet-bar{border:1px solid rgba(108,140,255,.25)!important;box-shadow:0 6px 18px rgba(0,0,0,.3)!important}
+    .leaflet-bar a{background:#181d2a!important;color:#e8eaf0!important;border-color:#2d3550!important}
+    .pin{position:relative;width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+    .pin.current{background:#6c8cff;box-shadow:0 0 0 7px rgba(108,140,255,.2),0 4px 14px rgba(0,0,0,.45)}
+    .pin.target{background:#ff6473;border-radius:50% 50% 50% 0;transform:rotate(-45deg)}
+    .pin.target:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#fff;left:5px;top:5px}
+    .bookmark-pin{width:12px;height:12px;border-radius:50%;background:#ffd166;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+    .offline{position:absolute;z-index:500;left:12px;right:12px;bottom:10px;padding:8px 10px;border-radius:10px;background:rgba(20,23,34,.88);color:#aeb5c8;font-size:11px;text-align:center;pointer-events:none;opacity:0;transition:.2s}
+    .offline.show{opacity:1}
+    .gesture-menu{position:absolute;z-index:700;display:none;flex-direction:column;gap:6px;min-width:112px;padding:8px;border-radius:16px;background:rgba(17,21,32,.94);border:1px solid rgba(127,143,168,.8);box-shadow:0 14px 34px rgba(0,0,0,.45);pointer-events:none;transform:translate(-50%,-50%)}
+    .gesture-menu.show{display:flex}
+    .gesture-option{height:34px;line-height:34px;padding:0 12px;border-radius:12px;background:rgba(38,48,77,.9);border:1px solid rgba(64,86,169,.55);color:#e8eaf0;font-size:12px;font-weight:700;text-align:center;white-space:nowrap}
+    .gesture-option.active{background:#6c8cff;color:#fff;border-color:#9badff;transform:scale(1.03)}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="offline" class="offline">底圖目前離線，座標與路線控制仍可使用</div>
+  <div id="gestureMenu" class="gesture-menu">
+    <div class="gesture-option" data-action="teleport">瞬移</div>
+    <div class="gesture-option" data-action="navigate">導航</div>
+    <div class="gesture-option" data-action="waypoint">加入節點</div>
+    <div class="gesture-option" data-action="bookmark">加入收藏</div>
+  </div>
+  <script src="leaflet/leaflet.js"></script>
+  <script>
+    const map = L.map('map',{
+      zoomControl:true,
+      attributionControl:true,
+      dragging:true,
+      touchZoom:true,
+      doubleClickZoom:false,
+      scrollWheelZoom:false,
+      worldCopyJump:true,
+      bounceAtZoomLimits:false
+    }).setView([25.033964,121.564468],14);
+    const offline = document.getElementById('offline');
+    const tiles = L.tileLayer('https://locwarp.tiles/tiles/{z}/{x}/{y}.png',{
+      maxZoom:19,
+      attribution:'© OpenStreetMap contributors',
+      crossOrigin:false
+    }).addTo(map);
+    let tileAttribution=tiles.options.attribution;
+    let tileOk=false;
+    tiles.on('tileload',()=>{tileOk=true;offline.classList.remove('show')});
+    tiles.on('tileerror',()=>{if(!tileOk)offline.classList.add('show')});
+    setTimeout(()=>{if(!tileOk)offline.classList.add('show')},3500);
+
+    const currentIcon=L.divIcon({className:'',html:'<div class="pin current"></div>',iconSize:[28,28],iconAnchor:[14,14]});
+    const targetIcon=L.divIcon({className:'',html:'<div class="pin target"></div>',iconSize:[28,28],iconAnchor:[10,24]});
+    const bookmarkIcon=L.divIcon({className:'',html:'<div class="bookmark-pin"></div>',iconSize:[16,16],iconAnchor:[8,8]});
+    let currentMarker=null,targetMarker=null,routeLine=null,bookmarkLayer=L.layerGroup().addTo(map);
+    const mapEl=map.getContainer();
+    const gestureMenu=document.getElementById('gestureMenu');
+    const gestureOptions=Array.from(gestureMenu.querySelectorAll('.gesture-option'));
+    let pressTimer=null,pressPoint=null,pressStart=null,longPressed=false,lastLongPressAt=0;
+    let gestureVisible=false,gestureLatLng=null,suppressClickUntil=0;
+
+    function clearLongPressTimer(){
+      if(pressTimer)clearTimeout(pressTimer);
+      pressTimer=null;pressPoint=null;pressStart=null;
+    }
+    function clamp(value,min,max){return Math.max(min,Math.min(max,value))}
+    function normalizeLatLng(latlng){
+      if(!latlng)return null;
+      const lat=Number(latlng.lat),lng=Number(latlng.lng);
+      if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+      const wrappedLng=((lng+180)%360+360)%360-180;
+      return L.latLng(clamp(lat,-90,90),wrappedLng);
+    }
+    function showGestureMenu(latlng,screenPoint){
+      if(!latlng||!screenPoint)return;
+      const now=Date.now();
+      if(now-lastLongPressAt<900)return;
+      lastLongPressAt=now;
+      longPressed=true;
+      clearLongPressTimer();
+      gestureLatLng=latlng;
+      gestureVisible=true;
+      if(map.dragging)map.dragging.disable();
+      const width=gestureMenu.offsetWidth||124;
+      const height=gestureMenu.offsetHeight||188;
+      const x=clamp(screenPoint.x+70,width/2+8,window.innerWidth-width/2-8);
+      const y=clamp(screenPoint.y-72,height/2+8,window.innerHeight-height/2-8);
+      gestureMenu.style.left=x+'px';
+      gestureMenu.style.top=y+'px';
+      gestureMenu.classList.add('show');
+      updateGestureSelection(screenPoint);
+    }
+    function hideGestureMenu(){
+      gestureVisible=false;
+      gestureLatLng=null;
+      gestureOptions.forEach(item=>item.classList.remove('active'));
+      gestureMenu.classList.remove('show');
+      if(map.dragging)map.dragging.enable();
+    }
+    function actionAt(point){
+      if(!gestureVisible||!point)return null;
+      for(const item of gestureOptions){
+        const rect=item.getBoundingClientRect();
+        if(point.x>=rect.left&&point.x<=rect.right&&point.y>=rect.top&&point.y<=rect.bottom){
+          return item.dataset.action||null;
+        }
+      }
+      return null;
+    }
+    function updateGestureSelection(point){
+      const action=actionAt(point);
+      gestureOptions.forEach(item=>{
+        item.classList.toggle('active',item.dataset.action===action);
+      });
+      return action;
+    }
+    function finishGesture(point){
+      if(!gestureVisible)return false;
+      const action=updateGestureSelection(point);
+      const latlng=gestureLatLng;
+      hideGestureMenu();
+      suppressClickUntil=Date.now()+800;
+      if(action&&latlng&&window.LocWarpAndroid){
+        LocWarpAndroid.mapLongPressAction(latlng.lat,latlng.lng,action);
+      }
+      return true;
+    }
+    function startLongPress(latlng,screenPoint){
+      if(!latlng||!screenPoint)return;
+      clearLongPressTimer();
+      longPressed=false;
+      pressPoint=normalizeLatLng(latlng);
+      if(!pressPoint)return;
+      pressStart=screenPoint;
+      pressTimer=setTimeout(()=>{
+        showGestureMenu(pressPoint,pressStart);
+      },700);
+    }
+    function moveLongPress(screenPoint){
+      if(gestureVisible){updateGestureSelection(screenPoint);return}
+      if(!pressStart||!screenPoint)return;
+      const dx=screenPoint.x-pressStart.x,dy=screenPoint.y-pressStart.y;
+      if(Math.sqrt(dx*dx+dy*dy)>12)clearLongPressTimer();
+    }
+    function touchPoint(ev){
+      const touch=(ev.touches&&ev.touches[0])||(ev.changedTouches&&ev.changedTouches[0]);
+      if(!touch)return null;
+      return {x:touch.clientX,y:touch.clientY};
+    }
+    function touchLatLng(ev){
+      const point=touchPoint(ev);
+      if(!point)return null;
+      const rect=mapEl.getBoundingClientRect();
+      return map.containerPointToLatLng(L.point(point.x-rect.left,point.y-rect.top));
+    }
+
+    map.on('mousedown',e=>{
+      const ev=e.originalEvent||{};
+      startLongPress(e.latlng,{x:ev.clientX||0,y:ev.clientY||0});
+    });
+    map.on('mousemove',e=>{
+      const ev=e.originalEvent||{};
+      moveLongPress({x:ev.clientX||0,y:ev.clientY||0});
+    });
+    map.on('mouseup',e=>{
+      const ev=e.originalEvent||{};
+      if(!finishGesture({x:ev.clientX||0,y:ev.clientY||0}))clearLongPressTimer();
+    });
+    map.on('dragstart zoomstart',()=>{if(!gestureVisible){hideGestureMenu();clearLongPressTimer()}});
+    map.on('contextmenu',e=>{if(e.originalEvent)e.originalEvent.preventDefault()});
+    mapEl.addEventListener('touchstart',ev=>{
+      if(ev.touches&&ev.touches.length!==1){hideGestureMenu();clearLongPressTimer();return}
+      startLongPress(touchLatLng(ev),touchPoint(ev));
+    },{passive:false});
+    mapEl.addEventListener('touchmove',ev=>{
+      if(ev.touches&&ev.touches.length!==1){hideGestureMenu();clearLongPressTimer();return}
+      if(gestureVisible)ev.preventDefault();
+      moveLongPress(touchPoint(ev));
+    },{passive:false});
+    mapEl.addEventListener('touchend',ev=>{
+      if(finishGesture(touchPoint(ev)))ev.preventDefault();
+      else clearLongPressTimer();
+    },{passive:false});
+    mapEl.addEventListener('touchcancel',()=>{hideGestureMenu();clearLongPressTimer()},{passive:true});
+    map.on('click',e=>{
+      if(Date.now()<suppressClickUntil){longPressed=false;return}
+      if(Date.now()-lastLongPressAt<800){longPressed=false;return}
+      if(longPressed){longPressed=false;return}
+      const latlng=normalizeLatLng(e.latlng);
+      if(latlng&&window.LocWarpAndroid)LocWarpAndroid.mapTap(latlng.lat,latlng.lng);
+    });
+    window.locwarpMap={
+      setCurrent(lat,lng,focus){
+        if(!currentMarker)currentMarker=L.marker([lat,lng],{icon:currentIcon,zIndexOffset:1000}).addTo(map);
+        else currentMarker.setLatLng([lat,lng]);
+        if(focus)map.setView([lat,lng],Math.max(map.getZoom(),15),{animate:true});
+      },
+      clearCurrent(){if(currentMarker){map.removeLayer(currentMarker);currentMarker=null}},
+      setTarget(lat,lng){
+        if(!targetMarker)targetMarker=L.marker([lat,lng],{icon:targetIcon,zIndexOffset:900}).addTo(map);
+        else targetMarker.setLatLng([lat,lng]);
+      },
+      clearTarget(){if(targetMarker){map.removeLayer(targetMarker);targetMarker=null}},
+      setRoute(points){
+        if(routeLine){map.removeLayer(routeLine);routeLine=null}
+        if(points&&points.length>1){
+          routeLine=L.polyline(points,{color:'#6c8cff',weight:5,opacity:.9,lineCap:'round'}).addTo(map);
+        }
+      },
+      setBookmarks(items){
+        bookmarkLayer.clearLayers();
+        (items||[]).forEach(item=>{
+          L.marker([item.lat,item.lng],{icon:bookmarkIcon})
+            .bindTooltip(item.name,{direction:'top'})
+            .addTo(bookmarkLayer);
+        });
+      },
+      focus(lat,lng,zoom){map.setView([lat,lng],zoom||16,{animate:true})},
+      reloadTiles(){
+        tileOk=false;
+        offline.classList.remove('show');
+        tiles.redraw();
+        setTimeout(()=>{if(!tileOk)offline.classList.add('show')},1500);
+      },
+      setAttribution(value){
+        if(map.attributionControl&&tileAttribution){
+          map.attributionControl.removeAttribution(tileAttribution);
+        }
+        tileAttribution=String(value||'');
+        tiles.options.attribution=tileAttribution;
+        if(map.attributionControl&&tileAttribution){
+          map.attributionControl.addAttribution(tileAttribution);
+        }
+      },
+      setChromeVisible(visible){
+        document.querySelectorAll('.leaflet-control-zoom')
+          .forEach(el=>{el.style.display=visible?'':'none'});
+      }
+    };
+  </script>
+</body>
+</html>

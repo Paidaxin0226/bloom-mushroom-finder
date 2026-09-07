@@ -1,0 +1,4 @@
+storeFile=locwarp-release.keystore
+storePassword=REPLACE_WITH_LOCAL_SECRET
+keyAlias=locwarpdebug
+keyPassword=REPLACE_WITH_LOCAL_SECRET

@@ -1,0 +1,85 @@
+# Python environments and caches
+.venv/
+.route-tools/
+.venv.broken_*/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.playwright-cli/
+output/playwright/
+
+# Electron / React
+frontend/node_modules/
+frontend/dist/
+frontend/release/
+frontend/.vite/
+
+# Local logs and runtime state
+*.log
+runtime/
+
+# Large source/generated ML data and training artifacts
+data/source/
+data/generated/
+data/reference/inhabited_routes/
+data/reference/worldcover/
+outputs/training/
+outputs/recognition/
+*.pt
+
+# Downloaded third-party binaries
+vendor/scrcpy/
+vendor/scrcpy_extract_*/
+vendor/scrcpy-win64-v*.zip
+
+# Private local data, screenshots, imported routes, and generated artifacts
+/runtime/
+/data/
+/models/
+/output/
+/outputs/
+/scratch/
+/tmp*/
+/routes/imported/
+/routes/_monthly/
+/tests/fixtures/restart_controls/*.png
+
+# Dependency caches and local agent/editor state
+.pnpm-store/
+node_modules/
+.agents/
+.codex/
+.idea/
+.vscode/
+.gradle/
+.kotlin/
+build/
+dist/
+dist-py/
+*.tsbuildinfo
+
+# Credentials, device-local settings, databases, backups, and packages
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+local.properties
+signing.properties
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+*.apk
+*.aab
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
+.DS_Store
+Thumbs.db

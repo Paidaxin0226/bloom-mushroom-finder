@@ -1,0 +1,90 @@
+plugins {
+    id "com.android.application"
+}
+
+def signingPropertiesFile = rootProject.file("signing/signing.properties")
+def signingProperties = new Properties()
+def releaseRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase(java.util.Locale.ROOT).contains("release")
+}
+
+if (signingPropertiesFile.exists()) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+}
+
+if (releaseRequested) {
+    if (!signingPropertiesFile.exists()) {
+        throw new GradleException(
+            "LocWarp release signing is not configured. " +
+            "Use tools/build-android-release.ps1 and see android-mock-provider/signing/README.md."
+        )
+    }
+    ["storeFile", "storePassword", "keyAlias", "keyPassword"].each { key ->
+        if (!signingProperties.getProperty(key)?.trim()) {
+            throw new GradleException("Missing '${key}' in signing/signing.properties.")
+        }
+    }
+    def configuredStore = rootProject.file(
+        "signing/${signingProperties.getProperty("storeFile")}"
+    )
+    if (!configuredStore.exists()) {
+        throw new GradleException(
+            "LocWarp release keystore not found: ${configuredStore}"
+        )
+    }
+}
+
+android {
+    namespace = "com.locwarp.mock"
+    compileSdk = 36
+    buildToolsVersion = "35.0.0"
+
+    defaultConfig {
+        applicationId = "com.locwarp.mock"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 181
+        versionName = "0.2.181"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    signingConfigs {
+        release {
+            if (signingPropertiesFile.exists()) {
+                storeFile = rootProject.file(
+                    "signing/${signingProperties.getProperty("storeFile")}"
+                )
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            debuggable = false
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            signingConfig = signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    implementation "com.google.zxing:core:3.5.3"
+    implementation "io.github.libxposed:service:101.0.0"
+    compileOnly "de.robv.android.xposed:api:82"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20240303"
+}

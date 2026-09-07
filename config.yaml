@@ -1,0 +1,131 @@
+# Pikmin target synthetic dataset settings.
+# Paths are resolved relative to this file.
+paths:
+  backgrounds: data/source/backgrounds
+  targets: data/source/targets
+  generated_root: data/generated
+  training_runs: outputs/training
+  pretrained_models: models/pretrained
+  training_control: runtime/training_control
+  artifact_catalog: runtime/artifacts/catalog.json
+
+generation:
+  # Every source background is resized with "cover" to this exact canvas.
+  # A fixed canvas makes square_size_pixels truly identical across all cities.
+  output_width: 1080
+  output_height: 2340
+  resize_mode: cover
+
+  # Generate this many random composites from every background image.
+  composites_per_background: 6
+  # Number of backgrounds synthesized in parallel. Increase for more speed;
+  # lower it when CPU or memory pressure is high.
+  parallel_workers: 4
+  # Progress is reported every parallel_workers images (fixed by the program).
+  # Real screenshots usually contain one target. Counts are sampled by these weights.
+  # Values do not have to add up to exactly 1; they are normalized automatically.
+  target_count_probabilities:
+    1: 0.90
+    2: 0.08
+    3: 0.02
+  targets_per_image_min: 1
+  targets_per_image_max: 4
+
+  # Fixed by the program; changing this value has no effect.
+  square_size_pixels: 256
+  target_padding_pixels: 16
+  # Recognition uses the original sprite exactly as supplied. Only x/y changes.
+  preserve_original_target_pixels: true
+  trim_transparent_padding: false
+  target_scale_min: 0.68
+  target_scale_max: 1.0
+
+  # Keep synthetic targets away from phone/game UI at the image edges.
+  placement_margin:
+    left: 20
+    top: 160
+    right: 20
+    bottom: 280
+  max_box_iou: 0.02
+  placement_attempts: 300
+
+  # These must stay disabled because the real target never changes appearance.
+  horizontal_flip_probability: 0.0
+  rotation_degrees: 0.0
+  brightness_min: 1.0
+  brightness_max: 1.0
+  contrast_min: 1.0
+  contrast_max: 1.0
+
+  validation_ratio: 0.20
+  random_seed: 20260818
+  # Lossless training images prevent JPEG artifacts from changing target edges.
+  output_format: png
+  png_compress_level: 4
+  jpeg_quality: 95
+  preview_count: 24
+
+  # Raw screenshots in data/source/targets/source are references, not transparent cutouts.
+  excluded_target_directories:
+    - source
+  require_transparency: true
+  alpha_threshold: 8
+
+training:
+  # Fixed-square box labels are an object-detection task, so use the detect model.
+  model: models/pretrained/yolo26s.pt
+  epochs: 100
+  image_size: 1024
+  # Batch 3 is the safe high-throughput target for this 8 GiB RTX 4070 Laptop.
+  # Resource-aware mode may lower it at startup when other apps are using memory.
+  batch: 3
+  device: auto
+  # Four loaders feed the GPU in parallel. The worker automatically retries at
+  # workers=0 if Windows reports an unexpected DataLoader process exit.
+  workers: 4
+  # Inspect free GPU memory and system RAM immediately before training. Keep 10%
+  # of each resource unused as a fluctuation buffer, then choose batch/workers.
+  resource_aware: true
+  resource_reserve_fraction: 0.10
+  minimum_gpu_free_gib: 4.0
+  training_process_ram_gib: 3.0
+  ram_per_worker_gib: 1.0
+  resume_incomplete: true
+  patience: 20
+  # Lossless PNG decoding is CPU-heavy. Disk cache creates reusable NPY files
+  # beside the images without consuming the 10+ GiB of RAM needed by RAM cache.
+  cache: disk
+  amp: true
+  rect: true
+  close_mosaic: 10
+  save_period: 10
+
+phone_automation:
+  # Fixed delay is retained for background collection and manual previews.
+  # Recognition uses screen-change detection and advances after 1 stable second.
+  settle_seconds: 4.0
+  # The centered rectangle is (2*horizontal+1) by (2*vertical+1) cells.
+  horizontal_radius: 3
+  vertical_radius: 4
+  swipe_duration_ms: 800
+  recognition:
+    # Direction-specific values allow an asymmetric search rectangle. The
+    # horizontal/vertical values below remain as legacy fallbacks.
+    left_radius: 3
+    right_radius: 3
+    up_radius: 4
+    down_radius: 4
+    horizontal_radius: 3
+    vertical_radius: 4
+    # Legacy compatibility value; recognition no longer uses a fixed wait.
+    settle_seconds: 4.0
+    confidence: 0.45
+    image_size: 1024
+    sound_alert: true
+    # Matches are always saved. Enable this only when every scanned frame is needed.
+    save_all_frames: false
+
+artifacts:
+  # Completed runs keep their original best.pt without creating a latest-model
+  # copy. Paused/resumable runs retain last.pt until they are completed.
+  auto_prune_completed_weights: true

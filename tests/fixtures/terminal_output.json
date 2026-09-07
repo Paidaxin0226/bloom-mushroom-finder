@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Ultralytics erase-line and color codes",
+    "raw": "\u001b[K\u001b[32m1/100 1.27G 25% 798/3190\u001b[0m\n",
+    "expected": "1/100 1.27G 25% 798/3190"
+  },
+  {
+    "name": "Windows newline retains completed progress",
+    "raw": "\r\u001b[Kbatch 1/10\r\u001b[2Kbatch 2/10\r\n",
+    "expected": "batch 2/10"
+  },
+  {
+    "name": "multiline error retains earlier lines",
+    "raw": "訓練程序失敗。\r\n\u001b[Kbatch 1\rbatch 2\r\n\u001b[31mCUDA out of memory\u001b[0m\r\n",
+    "expected": "訓練程序失敗。\nbatch 2\nCUDA out of memory"
+  },
+  {
+    "name": "OSC hyperlink preserves label and following output",
+    "raw": "\u001b]8;;https://example.com\u001b\\model\u001b]8;;\u001b\\\nnext line",
+    "expected": "model\nnext line"
+  },
+  {
+    "name": "OSC title terminated by bell",
+    "raw": "\u001b]0;Training\u0007ready",
+    "expected": "ready"
+  },
+  {
+    "name": "8-bit CSI progress codes",
+    "raw": "\u009bK\u009b32mready\u009b0m",
+    "expected": "ready"
+  },
+  {
+    "name": "control-only output is empty",
+    "raw": "\r\u001b[K\u0000\u001b[0m\r\n",
+    "expected": ""
+  },
+  {
+    "name": "normal brackets paths and indentation are preserved",
+    "raw": "  [K] value[K] [0.5] E:\\BloomPilot\\models\\yolo26s.pt\n錯誤：CUDA out of memory",
+    "expected": "  [K] value[K] [0.5] E:\\BloomPilot\\models\\yolo26s.pt\n錯誤：CUDA out of memory"
+  }
+]

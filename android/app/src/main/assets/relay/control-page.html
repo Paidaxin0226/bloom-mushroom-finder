@@ -1,0 +1,1067 @@
+<!doctype html><html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0c12">
+<link rel="icon" href="data:,">
+<title>LocWarp 遠端控制</title>
+<style nonce="{{NONCE}}">
+{{LEAFLET_CSS}}
+</style>
+<style nonce="{{NONCE}}">
+:root{color-scheme:dark;--bg:#0a0c12;--surface:#141722;--elevated:#1f2334;--input:#0f121b;--border:#2d3550;--card-border:#26304d;--input-border:#303a58;--text:#e8eaf0;--soft:#cbd1e2;--muted:#9499ac;--hint:#687087;--accent:#6c8cff;--accent-deep:#344b92;--teal:#5edbd0;--danger:#ff9aa2;--warning:#ffcf7a;--success:#9fe3b1}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font:inherit}
+button{touch-action:manipulation}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #9aafff;outline-offset:2px}
+button:disabled,input:disabled,textarea:disabled,select:disabled{opacity:.45;cursor:not-allowed}
+[hidden]{display:none!important}
+.app{width:min(100%,680px);margin:0 auto;padding:18px 16px calc(128px + env(safe-area-inset-bottom))}
+.connection{display:flex;align-items:center;gap:7px;min-height:44px;border:1px solid var(--border);border-radius:18px;background:var(--elevated);padding:7px 11px;color:var(--soft);font-size:11px;font-weight:750}
+.connection-dot{width:8px;height:8px;border-radius:50%;background:var(--warning)}
+.connection.online{color:var(--success)}
+.connection.online .connection-dot{background:var(--success)}
+.connection.offline{color:var(--danger)}
+.connection.offline .connection-dot{background:var(--danger)}
+.identity-card{position:fixed;z-index:40;top:72px;left:50%;width:min(calc(100% - 24px),656px);transform:translateX(-50%);box-shadow:0 18px 42px rgba(0,0,0,.5)}
+.page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.head-actions{display:flex;align-items:center;gap:6px}
+h1{margin:0;font-size:24px;line-height:1.2;letter-spacing:-.02em}
+.head-action{flex:0 0 auto;min-width:92px;min-height:44px}
+.page[hidden]{display:none}
+.stack{display:grid;gap:12px}
+.card{border:1px solid var(--card-border);border-radius:16px;background:var(--surface);padding:16px;box-shadow:0 3px 10px rgba(0,0,0,.12)}
+.card h2{margin:0;font-size:17px;line-height:1.35}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.hint{margin:8px 0 0;color:var(--muted);font-size:12px;line-height:1.58}
+.emphasis{color:var(--teal)}
+.status-copy{margin:10px 0 0;color:var(--muted);font-size:13px;line-height:1.65;white-space:pre-line;word-break:break-word}
+.status-copy.strong{color:var(--soft)}
+.field{display:block;margin-top:10px}
+.field-label{display:block;margin:0 0 6px;color:var(--muted);font-size:12px;font-weight:700}
+input,textarea,select{width:100%;min-height:50px;border:1px solid var(--input-border);border-radius:10px;background:var(--input);color:var(--text);padding:11px 12px;font-size:14px}
+input::placeholder,textarea::placeholder{color:var(--hint)}
+textarea{min-height:112px;resize:vertical;line-height:1.5}
+.row{display:flex;align-items:stretch;gap:8px;margin-top:10px}
+.row>*{flex:1;min-width:0}
+.button{min-height:48px;border:1px solid var(--border);border-radius:11px;background:var(--elevated);color:var(--soft);padding:8px 12px;font-size:13px;font-weight:700}
+.button.primary{border-color:#88a0ff;border-radius:12px;background:var(--accent);color:#fff;font-size:15px;font-weight:800;box-shadow:0 4px 12px rgba(70,95,190,.25)}
+.button.danger{color:var(--danger);font-weight:800}
+.button.compact{min-height:44px}
+.button.full{width:100%;margin-top:10px;min-height:54px}
+.button.disclosure{width:100%;margin-top:10px;text-align:left;padding-left:14px}
+.section-disclosure{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:48px;text-align:left;padding:8px 14px}
+.section-disclosure .chevron{color:var(--muted);font-size:15px}
+.switch-button{position:relative;flex:0 0 auto;width:54px;height:30px;min-height:30px;border:0;border-radius:999px;background:#303955;padding:0}
+.switch-button::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#f4f5f8;box-shadow:0 2px 4px rgba(0,0,0,.3);transition:transform .18s ease}
+.switch-button.on{background:var(--accent-deep)}
+.switch-button.on::after{transform:translateX(24px)}
+.select-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.select-button{display:flex;align-items:center;justify-content:center;gap:8px;min-height:58px;border:1px solid var(--border);border-radius:11px;background:var(--elevated);color:var(--muted);font-size:13px}
+.select-button.active{border-color:var(--accent);background:var(--accent-deep);color:#fff;font-weight:800}
+.mode-icon{font-size:18px;line-height:1}
+.mode-panel{margin-top:12px}
+.mode-panel[hidden]{display:none}
+.setting-row{display:grid;grid-template-columns:82px minmax(0,1fr) minmax(82px,.7fr);align-items:center;gap:8px;margin-top:10px}
+.setting-label{color:var(--muted);font-size:12px;font-weight:750}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px;border:1px solid var(--border);border-radius:12px;background:var(--elevated);padding:9px 10px}
+.toggle-copy{min-width:0}
+.toggle-title{color:#d9deec;font-size:13px;font-weight:750}
+.toggle-hint{margin-top:3px;color:var(--muted);font-size:11px;line-height:1.4}
+.check{display:flex;align-items:center;gap:8px;min-height:44px;margin:0;border:1px solid var(--border);border-radius:10px;background:var(--elevated);padding:8px 10px;color:var(--soft);font-size:12px}
+.check input{width:18px;min-height:18px;margin:0;accent-color:var(--accent)}
+.result{min-height:18px;margin:10px 0 0;color:var(--soft);font-size:12px;line-height:1.5}
+.result.error{color:var(--danger)}
+.identity-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
+.identity-state{margin-top:5px;color:var(--muted);font-size:12px}
+.advanced{margin-top:8px}
+.advanced summary{cursor:pointer;color:var(--soft);font-size:12px;font-weight:700}
+.advanced-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.library-list{display:grid;gap:8px;margin-top:10px}
+.library-group+.library-group{margin-top:14px}
+.library-heading{color:var(--muted);font-size:12px;font-weight:800}
+.library-item{border:1px solid var(--border);border-radius:11px;background:var(--elevated);padding:10px}
+.item-title{font-size:13px;font-weight:800}
+.item-body{margin-top:4px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;word-break:break-word}
+.item-actions{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.item-actions .button{flex:1 1 90px}
+.empty{padding:6px 0;color:#6f768c;font-size:12px}
+.step-meta{margin-top:10px;color:var(--muted);font-size:12px;line-height:1.65}
+.step-progress{margin-top:5px;color:var(--soft);font-size:12px}
+.step-mode-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.step-mode-button{min-height:48px;border:1px solid var(--border);border-radius:11px;background:var(--elevated);color:var(--muted);font-size:13px}
+.step-mode-button.active{border-color:var(--accent);background:var(--accent-deep);color:#fff;font-weight:800}
+.step-control-row .primary{flex:2}
+.step-control-row .danger{flex:1}
+.hook-card{margin-bottom:12px}
+.hook-card p{margin:8px 0 0;color:var(--soft);font-size:12px;line-height:1.6}
+.map-search-row{display:grid;grid-template-columns:minmax(0,1fr) 72px;gap:8px;margin-top:10px}
+.map-search-row input,.map-search-row .button{min-height:46px}
+.map-search-results{display:grid;gap:7px;margin-top:12px}
+.map-search-result{width:100%;min-height:46px;border:1px solid var(--border);border-radius:10px;background:var(--elevated);color:var(--soft);padding:9px 11px;text-align:left;font-size:12px;line-height:1.45}
+.map-search-dialog{width:min(calc(100% - 32px),520px);border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--text);padding:16px;box-shadow:0 22px 60px rgba(0,0,0,.6)}
+.map-search-dialog::backdrop{background:rgba(4,6,10,.74);backdrop-filter:blur(3px)}
+.map-search-dialog h2{margin:0;font-size:17px}
+.map-toast{position:fixed;z-index:2100;right:16px;bottom:calc(112px + env(safe-area-inset-bottom));left:16px;width:fit-content;max-width:min(calc(100% - 32px),560px);margin:auto;border:1px solid var(--border);border-radius:12px;background:rgba(31,35,52,.96);color:var(--soft);padding:10px 14px;font-size:12px;line-height:1.45;text-align:center;box-shadow:0 12px 34px rgba(0,0,0,.45)}
+.map-toast.error{border-color:rgba(255,154,162,.45);color:var(--danger)}
+.map-shell{position:relative;z-index:0;isolation:isolate;height:270px;margin-top:10px;overflow:hidden;border:1px solid var(--border);border-radius:0;background:#10131c}
+.map-canvas{width:100%;height:100%;background:#10131c}
+.map-shell .leaflet-container{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#10131c}
+.map-shell .leaflet-control-attribution{max-width:75%;background:rgba(15,18,27,.88)!important;color:#b7bed0;font-size:10px}
+.map-shell .leaflet-control-attribution a{color:#aab9ff}
+.map-shell .leaflet-bar{border:1px solid rgba(108,140,255,.35)!important;box-shadow:0 6px 18px rgba(0,0,0,.3)!important}
+.map-shell .leaflet-bar a{background:#181d2a!important;color:#e8eaf0!important;border-color:#2d3550!important}
+.map-pin{position:relative;width:22px;height:22px;border:3px solid #fff;border-radius:50%;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+.map-pin.current{background:var(--accent);box-shadow:0 0 0 7px rgba(108,140,255,.2),0 4px 14px rgba(0,0,0,.45)}
+.map-pin.target{border-radius:50% 50% 50% 0;background:#ff6473;transform:rotate(-45deg)}
+.map-pin.target::after{position:absolute;top:5px;left:5px;width:7px;height:7px;border-radius:50%;background:#fff;content:""}
+.map-pin.bookmark{width:12px;height:12px;border-width:2px;background:#ffd166}
+.map-offline{position:absolute;z-index:600;right:10px;bottom:28px;left:10px;padding:8px 10px;border:1px solid rgba(255,207,122,.35);border-radius:10px;background:rgba(20,23,34,.9);color:var(--warning);font-size:11px;text-align:center;pointer-events:none}
+.map-action-menu{position:absolute;z-index:700;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;width:210px;padding:8px;border:1px solid rgba(127,143,168,.8);border-radius:14px;background:rgba(17,21,32,.96);box-shadow:0 14px 34px rgba(0,0,0,.48);transform:translate(-50%,-50%)}
+.map-action-menu .button{min-height:40px;padding:7px;font-size:12px}
+.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important}
+.map-tools-disclosure{margin-top:8px}
+.map-tools-panel{padding-top:2px}
+.coordinate-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 66px;gap:8px;margin-top:10px}
+.coordinate-row input,.coordinate-row .button{min-height:48px;height:48px;margin:0}
+.map-tool-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}
+.map-tool-actions .button{min-height:48px;padding-inline:7px}
+.bottom-nav{position:fixed;z-index:1000;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;width:min(calc(100% - 32px),648px);min-height:82px;transform:translateX(-50%);border:1px solid rgba(45,53,80,.4);border-radius:36px;background:rgba(20,23,34,.92);padding:8px;box-shadow:0 14px 34px rgba(0,0,0,.38);backdrop-filter:blur(16px)}
+.nav-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:1px solid transparent;border-radius:32px;background:transparent;color:var(--muted);font-size:13px}
+.nav-tab.active{border-color:rgba(136,160,255,.4);background:rgba(108,140,255,.33);color:#fff;font-weight:800}
+.nav-icon{width:25px;height:25px;fill:currentColor}
+@media(max-width:430px){.app{padding:16px 12px calc(122px + env(safe-area-inset-bottom))}.card{padding:16px}.setting-row{grid-template-columns:72px minmax(0,1fr) 82px}.row.mobile-stack{flex-direction:column}.advanced-grid{grid-template-columns:1fr}.head-actions .connection{max-width:104px}.socket-status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.step-mode-button{font-size:12px;padding-inline:5px}}
+@media(min-width:760px){.app{padding-top:28px}.bottom-nav{bottom:22px}}
+</style></head><body>
+<main class="app">
+  <section class="card identity-card" id="identityPanel" hidden aria-labelledby="identityHeading">
+    <div class="card-head"><div><h2 id="identityHeading">遠端裝置</h2><div class="identity-state" id="accessStatus">等待主要裝置核准</div></div></div>
+    <div class="identity-grid">
+      <input id="viewerName" maxlength="60" aria-label="裝置名稱" placeholder="裝置名稱">
+      <select id="requestedRole" aria-label="要求的權限"><option value="readonly">僅檢視</option><option value="controller">要求控制權限</option></select>
+      <button class="button compact" id="identityButton">重新連線</button>
+    </div>
+  </section>
+
+  <section class="page" id="locationPage">
+    <div class="page-head"><h1>定位模擬</h1><button class="connection identity-toggle" aria-expanded="false" aria-controls="identityPanel"><span class="connection-dot"></span><span class="socket-status">連線中</span></button></div>
+    <div class="stack">
+      <article class="card">
+        <div class="card-head">
+          <h2>位置模擬</h2>
+          <button class="switch-button" id="enableButton" data-command aria-label="切換位置模擬" aria-pressed="false"></button>
+        </div>
+        <p class="status-copy emphasis" id="positionHint">讀取主要裝置狀態中</p>
+        <p class="status-copy" id="positionDetails">—</p>
+      </article>
+
+      <article class="card">
+        <h2>互動地圖</h2>
+        <div class="map-search-row">
+          <input id="mapSearch" maxlength="200" aria-label="搜尋地名或地址" placeholder="搜尋地名或地址">
+          <button class="button" id="mapSearchButton" data-command>搜尋</button>
+        </div>
+        <div class="map-shell">
+          <div class="map-canvas" id="remoteMap" role="application" aria-label="互動地圖，點一下選取位置"></div>
+          <div class="map-offline" id="mapOffline" hidden>底圖目前離線，選點與座標控制仍可使用</div>
+          <div class="map-action-menu" id="mapActionMenu" hidden aria-label="地圖快速操作">
+            <button class="button" data-map-action="teleport" data-command>瞬移</button>
+            <button class="button" data-map-action="navigate" data-command>導航</button>
+            <button class="button" data-map-action="waypoint" data-command>加入節點</button>
+            <button class="button" data-map-action="bookmark" data-command>加入收藏</button>
+          </div>
+        </div>
+        <p class="visually-hidden" id="mapSelection" aria-live="polite">點一下地圖選擇位置。</p>
+        <button class="button primary full" id="teleportButton" data-command>瞬移到選取位置</button>
+        <button class="button section-disclosure map-tools-disclosure" id="mapToolsDisclosure" aria-expanded="false" aria-controls="mapToolsPanel"><span>座標與地圖工具</span><span class="chevron">▾</span></button>
+        <div class="map-tools-panel" id="mapToolsPanel" hidden>
+          <div class="coordinate-row">
+            <input id="latitudeInput" type="number" inputmode="decimal" min="-90" max="90" step="0.000001" aria-label="緯度" placeholder="緯度">
+            <input id="longitudeInput" type="number" inputmode="decimal" min="-180" max="180" step="0.000001" aria-label="經度" placeholder="經度">
+            <button class="button" id="pasteCoordinateButton">貼上</button>
+          </div>
+          <div class="map-tool-actions">
+            <button class="button" id="mapLocateButton">地圖定位</button>
+            <button class="button" id="mapWaypointButton" data-command>加入節點</button>
+            <button class="button" id="mapBookmarkButton" data-command>加入收藏</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>移動模式</h2>
+        <div class="select-grid" id="locationModes">
+          <button class="select-button active" data-location-mode="navigate"><span class="mode-icon">➤</span><span>導航</span></button>
+          <button class="select-button" data-location-mode="loop"><span class="mode-icon">↻</span><span>循環</span></button>
+          <button class="select-button" data-location-mode="multistop"><span class="mode-icon">◆</span><span>多點</span></button>
+          <button class="select-button" data-location-mode="randomwalk"><span class="mode-icon">✣</span><span>隨機</span></button>
+        </div>
+
+        <div class="mode-panel" id="navigateOptions">
+          <p class="hint">從目前模擬位置前往上方輸入的目標座標。</p>
+        </div>
+
+        <div class="mode-panel" id="routeOptions" hidden>
+          <label class="field"><span class="field-label">路線節點（每行一個座標）</span><textarea id="routeText" placeholder="25.033964, 121.564468&#10;25.047800, 121.531900"></textarea></label>
+          <div class="row">
+            <label class="field"><span class="field-label">圈數（0＝持續）</span><input id="laps" type="number" min="0" value="0"></label>
+            <label class="field"><span class="field-label">每站停留秒數</span><input id="stopSeconds" type="number" min="0" value="0"></label>
+          </div>
+          <div class="row mobile-stack">
+            <label class="check"><input id="routePause" type="checkbox">隨機停留</label>
+            <label class="check"><input id="routeLoop" type="checkbox">重複路線</label>
+            <label class="check"><input id="routePath" type="checkbox" checked>沿道路規劃</label>
+          </div>
+          <button class="button full" id="saveRouteButton" data-command>儲存路線</button>
+        </div>
+
+        <div class="mode-panel" id="randomOptions" hidden>
+          <label class="field"><span class="field-label">中心點（選填）</span><input id="randomCenter" placeholder="25.033964, 121.564468"></label>
+          <label class="field"><span class="field-label">半徑（公尺）</span><input id="radius" type="number" min="1" value="500"></label>
+          <div class="row">
+            <label class="field"><span class="field-label">最短停留秒數</span><input id="randomPauseMin" type="number" min="1" value="5"></label>
+            <label class="field"><span class="field-label">最長停留秒數</span><input id="randomPauseMax" type="number" min="1" value="20"></label>
+          </div>
+          <div class="row">
+            <label class="check"><input id="randomPause" type="checkbox" checked>隨機停留</label>
+            <label class="check"><input id="randomPath" type="checkbox" checked>沿道路規劃</label>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>控制</h2>
+        <p class="status-copy" id="movementState">目前沒有執行中的移動</p>
+        <div class="row step-control-row">
+          <button class="button primary" id="locationPrimaryButton" data-command>開始導航</button>
+          <button class="button danger" id="stopButton" data-command hidden>終止</button>
+        </div>
+        <div class="row">
+          <button class="button" id="refreshButton">更新狀態</button>
+          <button class="button danger" id="restoreButton" data-command>還原定位</button>
+        </div>
+        <p class="result" id="result" aria-live="polite"></p>
+      </article>
+
+      <button class="button section-disclosure" id="movementDisclosure" aria-expanded="false" aria-controls="movementSettingsCard"><span>移動與安全設定</span><span class="chevron">▾</span></button>
+      <article class="card" id="movementSettingsCard" hidden>
+        <h2>移動設定</h2>
+        <div class="setting-row">
+          <div class="setting-label">速率 km/h</div>
+          <input id="speed" type="number" min="0.1" max="200" step="0.1" value="10.8" aria-label="移動速率">
+          <button class="button" id="setSpeedButton" data-command>設定</button>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-copy"><div class="toggle-title">直線移動</div><div class="toggle-hint">關閉時會沿道路規劃</div></div>
+          <button class="switch-button" id="straightLineButton" data-command aria-label="切換直線移動" aria-pressed="false"></button>
+        </div>
+        <input id="straightLine" type="checkbox" hidden>
+        <input id="usePath" type="checkbox" checked hidden>
+        <details class="advanced">
+          <summary>速度範圍（進階）</summary>
+          <div class="advanced-grid">
+            <label class="field"><span class="field-label">最低速度</span><input id="minSpeed" type="number" min="0.1" max="200" step="0.1" placeholder="選填"></label>
+            <label class="field"><span class="field-label">最高速度</span><input id="maxSpeed" type="number" min="0.1" max="200" step="0.1" placeholder="選填"></label>
+          </div>
+        </details>
+      </article>
+
+      <button class="button section-disclosure" id="libraryDisclosure" aria-expanded="false" aria-controls="libraryCard"><span>收藏與路線</span><span class="chevron">▾</span></button>
+      <article class="card" id="libraryCard" hidden>
+        <h2>本機收藏與路線</h2>
+        <div class="library-group">
+          <div class="library-heading" id="bookmarkHeading">收藏地點 0</div>
+          <div class="library-list" id="bookmarkLibrary"></div>
+        </div>
+        <div class="library-group">
+          <div class="library-heading" id="routeHeading">儲存路線 0</div>
+          <div class="library-list" id="routeLibrary"></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="page" id="stepsPage" hidden>
+    <div class="page-head"><h1>步數注入</h1><div class="head-actions"><button class="connection identity-toggle" aria-label="連線與裝置設定" aria-expanded="false" aria-controls="identityPanel"><span class="connection-dot"></span><span class="socket-status">連線中</span></button><button class="button head-action" id="hookInfoButton">Hook 說明</button></div></div>
+    <article class="card hook-card" id="hookInfoCard" hidden>
+      <h2>Hook</h2>
+      <p>步數指令會送給所有已在 App「應用程式」頁面啟用 Step Hook 的執行中 App。</p>
+    </article>
+    <div class="stack">
+      <article class="card">
+        <div class="step-mode-grid" id="stepModes">
+          <button class="step-mode-button active" data-step-mode="single">指定步數</button>
+          <button class="step-mode-button" data-step-mode="loop">循環</button>
+          <button class="step-mode-button" data-step-mode="follow">自動跟隨</button>
+        </div>
+      </article>
+
+      <article class="card" id="singleStepCard">
+        <h2>指定步數</h2>
+        <p class="hint">每次隨機等待 0.2～0.6 秒並注入 1～3 步，最後一批不會超過指定總數。</p>
+        <label class="field"><span class="field-label">要注入的步數（1～200000）</span><input id="stepCount" type="number" inputmode="numeric" min="1" max="200000" value="2500"></label>
+        <div class="step-meta" id="stepState">目前沒有執行中的指定步數</div>
+        <div class="step-progress" id="stepProgressText"></div>
+        <div class="row step-control-row">
+          <button class="button primary" id="stepPrimaryButton" data-command>開始注入</button>
+          <button class="button danger" id="stepStopButton" data-command hidden>終止</button>
+        </div>
+        <p class="result" id="singleStepResult" aria-live="polite"></p>
+      </article>
+
+      <article class="card" id="loopStepCard" hidden>
+        <h2>循環新增</h2>
+        <p class="hint">開始後持續使用固定隨機規則，直到你暫停或終止。</p>
+        <div class="step-meta" id="loopStepState">目前沒有執行中的循環新增</div>
+        <div class="step-progress" id="loopStepProgressText"></div>
+        <div class="row step-control-row">
+          <button class="button primary" id="loopStepPrimaryButton" data-command>開始循環</button>
+          <button class="button danger" id="loopStepStopButton" data-command hidden>終止</button>
+        </div>
+        <p class="result" id="loopStepResult" aria-live="polite"></p>
+      </article>
+
+      <div id="followStepPanel" class="stack" hidden>
+        <article class="card">
+          <h2>跟隨模擬走路</h2>
+          <p class="hint">LocWarp 模擬移動且不超過 15 km/h 時自動注入步數，不需設定步頻。</p>
+          <div class="toggle-row">
+            <div class="toggle-copy"><div class="toggle-title">啟用跟隨走路</div></div>
+            <button class="switch-button" id="followStepButton" data-command aria-label="啟用跟隨走路" aria-pressed="false"></button>
+          </div>
+          <div class="step-meta" id="followStepState">已關閉。</div>
+          <p class="result" id="followStepResult" aria-live="polite"></p>
+        </article>
+
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog class="map-search-dialog" id="mapSearchDialog" aria-labelledby="mapSearchDialogHeading">
+  <h2 id="mapSearchDialogHeading">搜尋結果</h2>
+  <div class="map-search-results" id="mapSearchResults"></div>
+  <button class="button full" id="mapSearchCancelButton">取消</button>
+</dialog>
+<div class="map-toast" id="mapToast" hidden role="status" aria-live="polite"></div>
+
+<nav class="bottom-nav" aria-label="主要功能">
+  <button class="nav-tab active" data-page="locationPage" aria-selected="true">
+    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7Zm0 4.5A2.5 2.5 0 1 1 12 11a2.5 2.5 0 0 1 0-4.5Z"/></svg>
+    <span>定位</span>
+  </button>
+  <button class="nav-tab" data-page="stepsPage" aria-selected="false">
+    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h4l2-5 4 12 2-7h6v2h-4.5L13 21 9 10l-.7 3H3v-2Z"/></svg>
+    <span>步數</span>
+  </button>
+</nav>
+
+<script nonce="{{NONCE}}">
+{{LEAFLET_JS}}
+</script>
+<script nonce="{{NONCE}}">
+const SESSION=(location.pathname.match(/\/r\/([A-Za-z0-9_-]{8,80})(?:\/|$)/)||[])[1]||'';
+const TOKEN_STORAGE_KEY='locwarp-relay-token:'+SESSION;
+const HASH_TOKEN=decodeURIComponent((location.hash||'').replace(/^#token=/,''));
+let TOKEN=HASH_TOKEN;
+try{
+  if(HASH_TOKEN){
+    sessionStorage.setItem(TOKEN_STORAGE_KEY,HASH_TOKEN);
+    history.replaceState(null,'',location.pathname+location.search);
+  }else TOKEN=sessionStorage.getItem(TOKEN_STORAGE_KEY)||'';
+}catch{}
+let ws,lastStatus=null,seq=1,pending=new Map(),reconnectTimer=null,reconnectRequested=false,currentAccess='pending',selectedLocationMode='navigate',selectedStepMode='single';
+let remoteMap=null,mapTiles=null,mapCurrentMarker=null,mapTargetMarker=null,mapRouteLine=null,mapBookmarkLayer=null,mapSelectedPoint=null,mapMenuPoint=null,mapHasFocused=false,mapTileReady=false;
+let mapCurrentIcon=null,mapTargetIcon=null,mapBookmarkIcon=null;
+let mapCoordinatesInitialized=false,mapToastTimer=null;
+let activeGrant=null,pendingViewerId='',pairingCode='',e2eKeyPromise=null,E2E_NONCE='',lastGrantGeneration=0,lastStatusSequence=0;
+const $=id=>document.getElementById(id);
+const num=(id,f=0)=>Number.isFinite(Number($(id).value))?Number($(id).value):f;
+const checked=id=>$(id).checked;
+function stored(key,fallback){try{return localStorage.getItem(key)||fallback}catch{return fallback}}
+function persist(key,value){try{localStorage.setItem(key,value)}catch{}}
+function showResult(id,text,ok=true){const el=$(id);el.textContent=text||'';el.className=ok?'result':'result error'}
+function localizeMessage(message){
+  const text=String(message||'');
+  const messages={
+    'This viewer is read-only':'此裝置目前只有檢視權限',
+    'B phone is offline':'主要裝置目前離線',
+    'B phone disconnected':'主要裝置連線已中斷',
+    'Too many pending commands':'等待中的指令過多，請稍後再試',
+    'Command timed out':'指令執行逾時',
+    'Empty result':'主要裝置未回傳結果',
+    'Android mock-location permission is not ready':'Android 模擬位置權限尚未就緒',
+    'Set a current location before navigation':'請先設定目前位置，再開始導航',
+    'Route planning failed':'道路路線規劃失敗',
+    'Loop requires at least 2 points':'循環路線至少需要兩個節點',
+    'Set a current location before loop movement':'請先設定目前位置，再開始循環移動',
+    'Loop route planning failed':'循環路線規劃失敗',
+    'Multi-stop requires at least 2 points':'多點路線至少需要兩個節點',
+    'Set a current location before multi-stop movement':'請先設定目前位置，再開始多點移動',
+    'Multi-stop route planning failed':'多點路線規劃失敗',
+    'No active movement':'目前沒有執行中的移動',
+    'Coordinate is required':'請輸入座標',
+    'Coordinate is invalid':'座標格式無效',
+    'Route points are required':'請輸入路線節點',
+    'Bookmark id is required':'找不到要刪除的收藏',
+    'Route id is required':'找不到要刪除的路線',
+    'Search query is required':'請輸入地名或地址',
+    'Address search is unavailable':'目前無法搜尋地址，仍可直接點選地圖',
+    'No search results':'找不到這個地點，請換一個關鍵字',
+    '已有其他步數工作執行中':'已有其他步數工作執行中',
+    '目前沒有可暫停的步數工作':'目前沒有可暫停的步數工作',
+    '目前沒有執行中的步數工作':'目前沒有執行中的步數工作',
+    '其他步數工作執行中，無法啟用自動跟隨':'其他步數工作執行中，無法啟用自動跟隨'
+  };
+  if(messages[text])return messages[text];
+  if(text.startsWith('Unknown command:'))return'主要裝置不支援此指令';
+  if(text.startsWith('Route cannot exceed '))return'路線節點數量超過上限';
+  if(text.startsWith('Step count must be between '))return'指定步數需介於 1 到 200000';
+  if(text.startsWith('Search query cannot exceed '))return'搜尋文字不可超過 200 個字元';
+  return text||'操作失敗';
+}
+function setConnection(text,state){
+  for(const status of document.querySelectorAll('.socket-status'))status.textContent=text;
+  for(const badge of document.querySelectorAll('.connection'))badge.className='connection identity-toggle'+(state?' '+state:'');
+}
+const generatedDeviceId=()=>{try{return crypto.randomUUID()}catch{return'viewer-'+Date.now()+'-'+Math.random().toString(36).slice(2)}};
+const DEVICE_ID=stored('locwarp-device-id',generatedDeviceId());
+persist('locwarp-device-id',DEVICE_ID);
+$('viewerName').value=stored('locwarp-viewer-name','瀏覽器');
+$('requestedRole').value=stored('locwarp-requested-role','readonly');
+function applyAccess(role){
+  currentAccess=role==='controller'?'controller':role==='readonly'?'readonly':'pending';
+  const readonly=currentAccess!=='controller';
+  $('accessStatus').textContent=currentAccess==='pending'
+    ?(pairingCode?'等待手機核准 · 配對碼 '+pairingCode:'等待端對端安全配對')
+    :readonly?'目前為僅檢視權限':'目前可控制主要裝置';
+  for(const control of document.querySelectorAll('[data-command]'))control.disabled=readonly;
+  renderSteps(lastStatus&&lastStatus.steps);
+  renderLocationControls();
+}
+const ENCODER=new TextEncoder(),DECODER=new TextDecoder();
+function bytesToBase64Url(value){
+  const bytes=value instanceof Uint8Array?value:new Uint8Array(value);
+  let binary='';
+  for(let index=0;index<bytes.length;index+=32768)binary+=String.fromCharCode(...bytes.subarray(index,index+32768));
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function base64UrlToBytes(value){
+  const normalized=String(value||'').replace(/-/g,'+').replace(/_/g,'/');
+  const binary=atob(normalized+'='.repeat((4-normalized.length%4)%4));
+  const bytes=new Uint8Array(binary.length);
+  for(let index=0;index<binary.length;index++)bytes[index]=binary.charCodeAt(index);
+  return bytes;
+}
+async function digest(value){return new Uint8Array(await crypto.subtle.digest('SHA-256',ENCODER.encode(value)))}
+async function hmac(value){
+  const key=await crypto.subtle.importKey('raw',ENCODER.encode(TOKEN),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC',key,ENCODER.encode(value)));
+}
+async function encryptionKey(){
+  if(!e2eKeyPromise)e2eKeyPromise=digest('locwarp-e2e-key-v2\u0000'+TOKEN).then(raw=>crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt','decrypt']));
+  return e2eKeyPromise;
+}
+async function sealEnvelope(payload){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const encrypted=await crypto.subtle.encrypt(
+    {name:'AES-GCM',iv,additionalData:ENCODER.encode('locwarp-relay-envelope-v2')},
+    await encryptionKey(),
+    ENCODER.encode(JSON.stringify(payload))
+  );
+  return'v2.'+bytesToBase64Url(iv)+'.'+bytesToBase64Url(encrypted);
+}
+async function openEnvelope(envelope){
+  const parts=String(envelope||'').split('.');
+  if(parts.length!==3||parts[0]!=='v2')throw new Error('invalid envelope');
+  const plaintext=await crypto.subtle.decrypt(
+    {name:'AES-GCM',iv:base64UrlToBytes(parts[1]),additionalData:ENCODER.encode('locwarp-relay-envelope-v2')},
+    await encryptionKey(),
+    base64UrlToBytes(parts[2])
+  );
+  return JSON.parse(DECODER.decode(plaintext));
+}
+async function viewerVerifier(){
+  return bytesToBase64Url(await digest('locwarp-relay-viewer-v2\u0000'+TOKEN));
+}
+async function viewerProof(){
+  return bytesToBase64Url(await hmac('locwarp-viewer-proof-v2|'+SESSION+'|'+DEVICE_ID+'|'+E2E_NONCE));
+}
+async function derivePairingCode(){
+  const value=await hmac('locwarp-pairing-v2|'+SESSION+'|'+DEVICE_ID+'|'+E2E_NONCE);
+  const number=new DataView(value.buffer,value.byteOffset,value.byteLength).getUint32(0);
+  return String(number%1000000).padStart(6,'0');
+}
+function validGrantPayload(value,type){
+  return value&&value.v===2&&value.type===type&&activeGrant
+    &&value.viewerId===activeGrant.viewerId
+    &&value.deviceId===DEVICE_ID
+    &&value.capability===activeGrant.capability
+    &&Math.abs(Date.now()-Number(value.issuedAtMs||0))<=120000;
+}
+async function installGrant(message){
+  const grant=await openEnvelope(message.grant);
+  const generation=Number(grant&&grant.grantGeneration);
+  if(!grant||grant.v!==2||grant.type!=='grant'
+    ||grant.viewerId!==message.viewerId||grant.deviceId!==DEVICE_ID
+    ||grant.e2eNonce!==E2E_NONCE
+    ||!/^[A-Za-z0-9_-]{24,100}$/.test(String(grant.capability||''))
+    ||!Number.isSafeInteger(generation)||generation<=lastGrantGeneration
+    ||Math.abs(Date.now()-Number(grant.issuedAtMs||0))>120000)throw new Error('invalid grant');
+  activeGrant=grant;
+  lastGrantGeneration=generation;
+  pendingViewerId=grant.viewerId;
+  applyAccess(grant.accessRole);
+  setConnection('端對端加密已連線','online');
+  refresh();
+}
+async function handleEncryptedStatus(message){
+  const payload=await openEnvelope(message.envelope);
+  const sequence=Number(payload&&payload.statusSequence);
+  if(!validGrantPayload(payload,'status')||!Number.isSafeInteger(sequence)||sequence<=lastStatusSequence)throw new Error('invalid status');
+  lastStatusSequence=sequence;
+  renderStatus(payload.status);
+}
+async function handleEncryptedResult(message){
+  const entry=pending.get(message.id);if(!entry)return;
+  pending.delete(message.id);
+  try{
+    const payload=await openEnvelope(message.envelope);
+    if(!validGrantPayload(payload,'result')||payload.requestMessageId!==entry.messageId)throw new Error('invalid result');
+    entry.resolve(payload.result||{ok:false,message:'Empty result'});
+  }catch(error){entry.resolve({ok:false,message:'端對端驗證失敗'})}
+}
+async function connect(){
+  clearTimeout(reconnectTimer);
+  activeGrant=null;pendingViewerId='';lastGrantGeneration=0;lastStatusSequence=0;E2E_NONCE=generatedDeviceId();applyAccess('pending');
+  if(!SESSION||!/^[A-Za-z0-9_-]{16,160}$/.test(TOKEN)){setConnection('缺少或無效的連線權杖','offline');return}
+  if(location.protocol!=='https:'&&!['localhost','127.0.0.1','::1'].includes(location.hostname)){setConnection('安全連線要求 HTTPS','offline');return}
+  if(!crypto.subtle){setConnection('瀏覽器不支援端對端加密','offline');return}
+  pairingCode=await derivePairingCode();
+  applyAccess('pending');
+  ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/viewer');
+  ws.onopen=async()=>{
+    try{
+      ws.send(JSON.stringify({
+        type:'auth',
+        session:SESSION,
+        token:await viewerVerifier(),
+        name:$('viewerName').value||'瀏覽器',
+        deviceId:DEVICE_ID,
+        requestedRole:$('requestedRole').value,
+        e2eNonce:E2E_NONCE,
+        e2eProof:await viewerProof()
+      }));
+      setConnection('配對碼 '+pairingCode);
+      applyAccess('pending');
+    }catch{
+      setConnection('端對端初始化失敗','offline');
+      ws.close(1008,'e2e initialization failed');
+    }
+  };
+  ws.onclose=event=>{
+    activeGrant=null;applyAccess('pending');
+    const retry=reconnectRequested||(event.code!==1008&&event.code!==1013&&event.reason!=='expired');
+    reconnectRequested=false;
+    if(retry){
+      setConnection('連線已中斷，正在重連','offline');
+      reconnectTimer=setTimeout(()=>connect().catch(()=>setConnection('重新連線失敗','offline')),1500);
+    }else{
+      setConnection(event.code===1008?'連線未獲手機核准':'連線已停止，請稍後重試','offline');
+    }
+  };
+  ws.onerror=()=>setConnection('連線錯誤','offline');
+  ws.onmessage=async event=>{
+    let message={};try{message=JSON.parse(event.data)}catch{}
+    try{
+      if(message.type==='approval_pending'){pendingViewerId=message.viewerId||'';setConnection('配對碼 '+pairingCode);applyAccess('pending');return}
+      if(message.type==='hello'&&message.role==='viewer'){await installGrant(message);return}
+      if(message.type==='access'){message.viewerId=pendingViewerId;message.deviceId=DEVICE_ID;message.e2eNonce=E2E_NONCE;await installGrant(message);return}
+      if(message.type==='status'){await handleEncryptedStatus(message);return}
+      if(message.type==='result'){await handleEncryptedResult(message);return}
+      if(message.type==='relay_error'){const entry=pending.get(message.id);if(entry){pending.delete(message.id);entry.resolve({ok:false,message:message.message||'操作失敗'})}return}
+      if(message.type==='host')setConnection(message.online?'端對端加密已連線':'主機離線',message.online?'online':'offline');
+    }catch(error){activeGrant=null;applyAccess('pending');setConnection('端對端驗證失敗','offline');if(ws)ws.close(1008,'e2e verification failed')}
+  };
+}
+async function request(command,payload={}){
+  if(!activeGrant||currentAccess!=='controller')return{ok:false,message:currentAccess==='readonly'?'This viewer is read-only':'目前未連線'};
+  const id=String(seq++),messageId=generatedDeviceId();
+  const envelope=await sealEnvelope({
+    v:2,
+    type:'command',
+    viewerId:activeGrant.viewerId,
+    deviceId:DEVICE_ID,
+    capability:activeGrant.capability,
+    messageId,
+    issuedAtMs:Date.now(),
+    command,
+    payload
+  });
+  return new Promise(resolve=>{
+    pending.set(id,{resolve,messageId});
+    if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'command',id,envelope}));
+    else{pending.delete(id);resolve({ok:false,message:'目前未連線'})}
+    setTimeout(()=>{const entry=pending.get(id);if(entry){pending.delete(id);entry.resolve({ok:false,message:'指令逾時'})}},45000);
+  });
+}
+async function sendCommand(command,payload={},successText='',resultId='result'){
+  try{
+    const data=await request(command,payload);
+    showResult(resultId,data.ok?(successText||data.message||'操作完成'):localizeMessage(data.message),!!data.ok);
+    if(data.status)renderStatus(data.status);else refresh();
+  }catch(error){showResult(resultId,'連線失敗',false)}
+}
+function refresh(){if(activeGrant&&ws&&ws.readyState===1)ws.send(JSON.stringify({type:'status'}))}
+function parsePoint(value){
+  let text=String(value||'').trim();if(!text)return null;
+  try{text=decodeURIComponent(text)}catch{}
+  try{const url=new URL(text);for(const key of['query','q','ll']){const point=parsePoint(url.searchParams.get(key));if(point)return point}}catch{}
+  for(const regex of[/\/@([-+]?\d{1,2}(?:\.\d+)?),([-+]?\d{1,3}(?:\.\d+)?)/,/!3d([-+]?\d{1,2}(?:\.\d+)?)!4d([-+]?\d{1,3}(?:\.\d+)?)/,/([-+]?\d{1,2}(?:\.\d+)?)\s*(?:,|\s)\s*([-+]?\d{1,3}(?:\.\d+)?)/]){
+    const match=text.match(regex);if(!match)continue;
+    const lat=Number(match[1]),lng=Number(match[2]);
+    if(Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180)return{lat,lng};
+  }
+  return null;
+}
+function parseRoute(value){return String(value||'').split(/\r?\n/).map(parsePoint).filter(Boolean)}
+function normalizeMapPoint(value){
+  if(!value)return null;
+  const lat=Number(value.lat),lng=Number(value.lng);
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)||Math.abs(lat)>90||Math.abs(lng)>180)return null;
+  return{lat:Math.max(-90,Math.min(90,lat)),lng:((lng+180)%360+360)%360-180};
+}
+function setCoordinateInputs(value){
+  const point=normalizeMapPoint(value);if(!point)return;
+  if(document.activeElement!==$('latitudeInput'))$('latitudeInput').value=Number(point.lat).toFixed(6);
+  if(document.activeElement!==$('longitudeInput'))$('longitudeInput').value=Number(point.lng).toFixed(6);
+}
+function readCoordinateInputs(){
+  const latText=$('latitudeInput').value.trim(),lngText=$('longitudeInput').value.trim();
+  if(!latText||!lngText){
+    showMapToast('請完整輸入緯度與經度。',false);
+    return null;
+  }
+  const point=normalizeMapPoint({
+    lat:Number(latText),
+    lng:Number(lngText)
+  });
+  if(!point)showMapToast('請輸入有效座標：緯度 -90～90，經度 -180～180。',false);
+  return point;
+}
+function showMapToast(text,ok=true){
+  clearTimeout(mapToastTimer);
+  const toast=$('mapToast');
+  toast.textContent=text||'';
+  toast.className='map-toast'+(ok?'':' error');
+  toast.hidden=!text;
+  if(text)mapToastTimer=setTimeout(()=>{toast.hidden=true},2600);
+}
+async function pasteCoordinateFromClipboard(){
+  try{
+    const point=parsePoint(await navigator.clipboard.readText());
+    if(!point){showMapToast('座標格式錯誤，請使用「緯度, 經度」',false);return}
+    selectMapPoint(point,true);
+    showMapToast('座標已貼上');
+  }catch(error){
+    showMapToast('無法讀取剪貼簿，請確認瀏覽器剪貼簿權限',false);
+  }
+}
+function initRemoteMap(){
+  if(!window.L){
+    $('mapOffline').hidden=false;
+    $('mapOffline').textContent='地圖元件載入失敗，座標控制仍可使用';
+    return;
+  }
+  remoteMap=L.map('remoteMap',{
+    zoomControl:true,
+    attributionControl:true,
+    dragging:true,
+    touchZoom:true,
+    doubleClickZoom:true,
+    scrollWheelZoom:true,
+    worldCopyJump:true,
+    bounceAtZoomLimits:false
+  }).setView([25.033964,121.564468],14);
+  mapTiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    keepBuffer:1,
+    updateWhenIdle:true,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+  }).addTo(remoteMap);
+  mapTiles.on('tileload',()=>{mapTileReady=true;$('mapOffline').hidden=true});
+  mapTiles.on('tileerror',()=>{if(!mapTileReady)$('mapOffline').hidden=false});
+  setTimeout(()=>{if(!mapTileReady)$('mapOffline').hidden=false},3500);
+  mapCurrentIcon=L.divIcon({className:'',html:'<div class="map-pin current"></div>',iconSize:[28,28],iconAnchor:[14,14]});
+  mapTargetIcon=L.divIcon({className:'',html:'<div class="map-pin target"></div>',iconSize:[28,28],iconAnchor:[10,24]});
+  mapBookmarkIcon=L.divIcon({className:'',html:'<div class="map-pin bookmark"></div>',iconSize:[16,16],iconAnchor:[8,8]});
+  mapBookmarkLayer=L.layerGroup().addTo(remoteMap);
+  remoteMap.on('click',event=>{hideMapActionMenu();selectMapPoint(event.latlng,false)});
+  remoteMap.on('contextmenu',event=>{
+    if(event.originalEvent)event.originalEvent.preventDefault();
+    selectMapPoint(event.latlng,false);
+    showMapActionMenu(event.latlng,event.containerPoint);
+  });
+  remoteMap.on('movestart zoomstart',hideMapActionMenu);
+  setTimeout(()=>remoteMap.invalidateSize(),0);
+}
+function selectMapPoint(value,focus){
+  const point=normalizeMapPoint(value);if(!point)return;
+  mapSelectedPoint=point;
+  mapCoordinatesInitialized=true;
+  setCoordinateInputs(point);
+  $('mapSelection').textContent='已選取 '+fmtPoint(point);
+  setMapTarget(point);
+  if(focus&&remoteMap)remoteMap.setView([point.lat,point.lng],Math.max(remoteMap.getZoom(),16),{animate:true});
+  const dialog=$('mapSearchDialog');
+  if(dialog.open)dialog.close();
+  updateMapRoute();
+}
+function setMapTarget(point){
+  if(!remoteMap)return;
+  if(!point){
+    if(mapTargetMarker){remoteMap.removeLayer(mapTargetMarker);mapTargetMarker=null}
+    return;
+  }
+  if(!mapTargetMarker)mapTargetMarker=L.marker([point.lat,point.lng],{icon:mapTargetIcon,zIndexOffset:900}).addTo(remoteMap);
+  else mapTargetMarker.setLatLng([point.lat,point.lng]);
+}
+function showMapActionMenu(point,containerPoint){
+  mapMenuPoint=normalizeMapPoint(point);if(!mapMenuPoint)return;
+  const menu=$('mapActionMenu'),shell=menu.parentElement;
+  const x=Math.max(113,Math.min(shell.clientWidth-113,Number(containerPoint.x)||shell.clientWidth/2));
+  const y=Math.max(82,Math.min(shell.clientHeight-82,Number(containerPoint.y)||shell.clientHeight/2));
+  menu.style.left=x+'px';menu.style.top=y+'px';menu.hidden=false;
+}
+function hideMapActionMenu(){$('mapActionMenu').hidden=true;mapMenuPoint=null}
+function addMapWaypoint(point){
+  const safe=normalizeMapPoint(point);if(!safe)return;
+  const existing=$('routeText').value.trim();
+  $('routeText').value=(existing?existing+'\n':'')+fmtPoint(safe);
+  selectMapPoint(safe,false);
+  updateMapRoute();
+  showMapToast('已加入路線節點');
+}
+function updateMapRoute(){
+  if(!remoteMap)return;
+  if(mapRouteLine){remoteMap.removeLayer(mapRouteLine);mapRouteLine=null}
+  const activeRoute=lastStatus&&lastStatus.running&&Array.isArray(lastStatus.route)?lastStatus.route:[];
+  const points=(activeRoute.length>1?activeRoute:parseRoute($('routeText').value)).map(normalizeMapPoint).filter(Boolean);
+  if(points.length>1)mapRouteLine=L.polyline(points,{color:'#6c8cff',weight:5,opacity:.9,lineCap:'round'}).addTo(remoteMap);
+}
+function updateRemoteMap(status){
+  if(!remoteMap)return;
+  const current=normalizeMapPoint(status&&status.current);
+  if(current){
+    if(!mapCurrentMarker)mapCurrentMarker=L.marker([current.lat,current.lng],{icon:mapCurrentIcon,zIndexOffset:1000}).addTo(remoteMap);
+    else mapCurrentMarker.setLatLng([current.lat,current.lng]);
+  }else if(mapCurrentMarker){remoteMap.removeLayer(mapCurrentMarker);mapCurrentMarker=null}
+  const target=mapSelectedPoint||normalizeMapPoint(status&&status.target);
+  setMapTarget(target);
+  mapBookmarkLayer.clearLayers();
+  for(const bookmark of status&&status.bookmarks||[]){
+    const point=normalizeMapPoint(bookmark.point);if(!point)continue;
+    const marker=L.marker([point.lat,point.lng],{icon:mapBookmarkIcon}).addTo(mapBookmarkLayer);
+    marker.bindTooltip(bookmark.name||'收藏',{direction:'top'});
+    marker.on('click',()=>selectMapPoint(point,true));
+  }
+  updateMapRoute();
+  if(!mapHasFocused){
+    const focus=current||target;
+    if(focus){remoteMap.setView([focus.lat,focus.lng],Math.max(remoteMap.getZoom(),15));mapHasFocused=true}
+  }
+  setTimeout(()=>remoteMap.invalidateSize(),0);
+}
+function renderMapSearchResults(results){
+  const root=$('mapSearchResults');root.replaceChildren();
+  for(const item of results){
+    const point=normalizeMapPoint(item);if(!point)continue;
+    const button=document.createElement('button');
+    button.type='button';button.className='map-search-result';button.dataset.command='';
+    button.textContent=item.label||fmtPoint(point);
+    button.disabled=currentAccess!=='controller';
+    button.addEventListener('click',()=>{
+      selectMapPoint(point,true);
+      showMapToast('已選取 '+(item.label||fmtPoint(point)));
+    });
+    root.append(button);
+  }
+  if(root.childElementCount){
+    const dialog=$('mapSearchDialog');
+    if(dialog.open)dialog.close();
+    dialog.showModal();
+  }
+}
+async function searchMapAddress(){
+  const query=$('mapSearch').value.trim();
+  if(!query){showMapToast('請輸入地名或地址',false);return}
+  $('mapSearchButton').disabled=true;
+  showMapToast('搜尋中…');
+  try{
+    const data=await request('searchAddress',{query});
+    if(data.status)renderStatus(data.status);
+    if(!data.ok){showMapToast(localizeMessage(data.message),false);return}
+    const results=Array.isArray(data.results)?data.results:[];
+    renderMapSearchResults(results);
+    if(!results.length)showMapToast('找不到這個地點，請換一個關鍵字',false);
+  }catch(error){showMapToast('目前無法搜尋地址，仍可直接點選地圖',false)}
+  finally{$('mapSearchButton').disabled=currentAccess!=='controller'}
+}
+async function pointCommand(command,selectedPoint){
+  const point=normalizeMapPoint(selectedPoint)||readCoordinateInputs();
+  if(!point)return;
+  selectMapPoint(point,false);
+  await request('setStraightLine',{enabled:checked('straightLine')});
+  sendCommand(command,{...point,usePath:checked('usePath')&&!checked('straightLine'),speedKmh:num('speed',10.8)},command==='teleport'?'已瞬移到指定位置':'已開始導航');
+}
+function setSpeed(){
+  const payload={speedKmh:num('speed',10.8)};
+  if($('minSpeed').value.trim())payload.minKmh=num('minSpeed',0);
+  if($('maxSpeed').value.trim())payload.maxKmh=num('maxSpeed',0);
+  sendCommand('setSpeed',payload,'速度設定已更新');
+}
+function randomWalk(){
+  const center=parsePoint($('randomCenter').value);
+  const payload={radiusM:num('radius',500),pauseEnabled:checked('randomPause'),pauseMin:num('randomPauseMin',5),pauseMax:num('randomPauseMax',20),usePath:checked('randomPath')};
+  if(center)Object.assign(payload,center);
+  sendCommand('randomWalk',payload,'已開始隨機漫步');
+}
+function routePayload(){
+  const points=parseRoute($('routeText').value);
+  if(points.length<2){showResult('result','路線至少需要兩個有效座標',false);return null}
+  return{points,pauseEnabled:checked('routePause'),usePath:checked('routePath')};
+}
+function startLoop(){const payload=routePayload();if(!payload)return;payload.laps=Math.max(0,Math.floor(num('laps',0)));sendCommand('loop',payload,'已開始循環移動')}
+function startMultiStop(){const payload=routePayload();if(!payload)return;payload.stopSeconds=Math.max(0,Math.floor(num('stopSeconds',0)));payload.loop=checked('routeLoop');sendCommand('multiStop',payload,'已開始多點移動')}
+function saveBookmark(selectedPoint){
+  const point=normalizeMapPoint(selectedPoint)||readCoordinateInputs()||normalizeMapPoint(lastStatus&&lastStatus.current);
+  if(!point){showResult('result','目前沒有可儲存的位置',false);return}
+  const name=window.prompt('收藏名稱','新收藏');
+  if(name===null)return;
+  sendCommand('addBookmark',{name:name.trim()||'新收藏',...point},'位置已加入收藏');
+}
+function saveRoute(){const payload=routePayload();if(!payload)return;const name=window.prompt('路線名稱','我的路線');if(name===null)return;sendCommand('addRoute',{name:name.trim()||'我的路線',points:payload.points},'路線已儲存')}
+function fmtPoint(point){return point?Number(point.lat).toFixed(6)+', '+Number(point.lng).toFixed(6):'—'}
+function movementLabel(status){
+  if(!status.running)return'目前沒有執行中的移動';
+  if(status.paused)return'移動已暫停';
+  const labels={navigate:'導航中',loop:'循環移動中',multiStop:'多點移動中',randomWalk:'隨機漫步中'};
+  return labels[status.state]||'移動中';
+}
+function renderStatus(status){
+  lastStatus=status||{};
+  const initialPoint=normalizeMapPoint(lastStatus.target)||normalizeMapPoint(lastStatus.current);
+  if(!mapCoordinatesInitialized&&initialPoint){
+    mapSelectedPoint=initialPoint;
+    mapCoordinatesInitialized=true;
+    setCoordinateInputs(initialPoint);
+  }
+  const enabled=!!lastStatus.mockEnabled;
+  $('enableButton').classList.toggle('on',enabled);
+  $('enableButton').setAttribute('aria-pressed',String(enabled));
+  $('positionHint').textContent=enabled?'已啟用，可從互動地圖選擇起點。':'尚未啟用位置模擬';
+  $('positionDetails').textContent=fmtPoint(lastStatus.current)+'\n'+movementLabel(lastStatus)+' · '+Number(lastStatus.speedKmh||0).toFixed(1)+' km/h';
+  $('movementState').textContent=movementLabel(lastStatus);
+  $('straightLine').checked=!!lastStatus.straightLine;
+  $('usePath').checked=!lastStatus.straightLine;
+  $('straightLineButton').classList.toggle('on',!!lastStatus.straightLine);
+  $('straightLineButton').setAttribute('aria-pressed',String(!!lastStatus.straightLine));
+  renderLibrary(lastStatus);
+  updateRemoteMap(lastStatus);
+  renderSteps(lastStatus.steps);
+  renderLocationControls();
+}
+function selectLocationMode(mode){
+  selectedLocationMode=['navigate','loop','multistop','randomwalk'].includes(mode)?mode:'navigate';
+  for(const button of document.querySelectorAll('[data-location-mode]'))button.classList.toggle('active',button.dataset.locationMode===selectedLocationMode);
+  $('navigateOptions').hidden=selectedLocationMode!=='navigate';
+  $('routeOptions').hidden=selectedLocationMode!=='loop'&&selectedLocationMode!=='multistop';
+  $('randomOptions').hidden=selectedLocationMode!=='randomwalk';
+  renderLocationControls();
+}
+function renderLocationControls(){
+  const status=lastStatus||{};
+  const active=!!status.running;
+  const labels={navigate:'開始導航',loop:'開始循環',multistop:'開始多點移動',randomwalk:'開始隨機漫步'};
+  $('locationPrimaryButton').textContent=active?(status.paused?'繼續':'暫停'):(labels[selectedLocationMode]||labels.navigate);
+  $('stopButton').disabled=currentAccess!=='controller'||!active;
+  $('stopButton').hidden=!active;
+}
+function runLocationPrimary(){
+  if(lastStatus&&lastStatus.running){sendCommand('togglePause',{},lastStatus.paused?'已繼續移動':'已暫停移動');return}
+  if(selectedLocationMode==='loop'){startLoop();return}
+  if(selectedLocationMode==='multistop'){startMultiStop();return}
+  if(selectedLocationMode==='randomwalk'){randomWalk();return}
+  pointCommand('navigate');
+}
+function durationLabel(ms){
+  const seconds=Math.floor(Math.max(0,Number(ms)||0)/1000);
+  if(seconds<60)return seconds+' 秒';
+  const minutes=Math.floor(seconds/60),rest=seconds%60;
+  if(minutes<60)return minutes+' 分 '+rest+' 秒';
+  return Math.floor(minutes/60)+' 小時 '+(minutes%60)+' 分';
+}
+function selectStepMode(mode){
+  selectedStepMode=['single','loop','follow'].includes(mode)?mode:'single';
+  for(const button of document.querySelectorAll('[data-step-mode]'))button.classList.toggle('active',button.dataset.stepMode===selectedStepMode);
+  $('singleStepCard').hidden=selectedStepMode!=='single';
+  $('loopStepCard').hidden=selectedStepMode!=='loop';
+  $('followStepPanel').hidden=selectedStepMode!=='follow';
+}
+function renderSteps(stepStatus){
+  const step=stepStatus||{};
+  const mode=step.mode||(Number(step.target)>0?'single':'none');
+  const active=!!step.running,paused=!!step.paused;
+  const singleActive=active&&mode==='single',loopActive=active&&mode==='loop',followActive=active&&mode==='follow';
+  const target=Math.max(0,Number(step.target)||0),injected=Math.max(0,Number(step.injected)||0);
+  const elapsed=durationLabel(step.elapsedMs);
+  const readonly=currentAccess!=='controller',blocked=active||!!step.anotherJobActive;
+
+  const singleLabels={idle:'目前沒有執行中的指定步數',completed:'已完成：本次共送出 '+injected+' 步',stopped:'已終止：本次共送出 '+injected+' 步'};
+  $('stepState').textContent=singleActive?'指定步數 · '+(paused?'已暫停':'執行中'):(mode==='single'?(singleLabels[step.state]||singleLabels.idle):singleLabels.idle);
+  $('stepProgressText').textContent=singleActive?'已送出 '+injected+' / '+target+' 步 · 已執行 '+elapsed:'';
+  $('stepPrimaryButton').textContent=singleActive?(paused?'繼續':'暫停'):'開始注入';
+  $('stepStopButton').hidden=!singleActive;
+  $('stepCount').disabled=blocked||readonly;
+  $('stepPrimaryButton').disabled=readonly||(!singleActive&&blocked);
+  $('stepStopButton').disabled=readonly||!singleActive;
+
+  $('loopStepState').textContent=loopActive?'循環新增 · '+(paused?'已暫停':'執行中'):(mode==='loop'&&step.state==='stopped'?'已終止：本次共送出 '+injected+' 步':'目前沒有執行中的循環新增');
+  $('loopStepProgressText').textContent=loopActive?'本次共送出 '+injected+' 步 · 已執行 '+elapsed:'';
+  $('loopStepPrimaryButton').textContent=loopActive?(paused?'繼續':'暫停'):'開始循環';
+  $('loopStepStopButton').hidden=!loopActive;
+  $('loopStepPrimaryButton').disabled=readonly||(!loopActive&&blocked);
+  $('loopStepStopButton').disabled=readonly||!loopActive;
+
+  const followEnabled=!!step.followEnabled,speed=Number(step.speedKmh)||0;
+  $('followStepButton').classList.toggle('on',followEnabled);
+  $('followStepButton').setAttribute('aria-pressed',String(followEnabled));
+  if(!followEnabled)$('followStepState').textContent='已關閉。';
+  else if(step.anotherJobActive)$('followStepState').textContent='其他步數工作執行中，跟隨走路暫停使用。';
+  else if(followActive)$('followStepState').textContent='跟隨中：'+speed.toFixed(1)+' km/h · 本次共送出 '+injected+' 步';
+  else if(step.movementRunning&&speed>15)$('followStepState').textContent='目前 '+speed.toFixed(1)+' km/h，超過 15 km/h，暫停注入。';
+  else $('followStepState').textContent='等待定位頁開始模擬移動。';
+  $('followStepButton').disabled=readonly||(!followEnabled&&blocked);
+
+}
+function renderLibrary(status){
+  const bookmarkRoot=$('bookmarkLibrary'),routeRoot=$('routeLibrary');
+  bookmarkRoot.replaceChildren();routeRoot.replaceChildren();
+  const bookmarks=status.bookmarks||[],routes=status.routes||[];
+  $('bookmarkHeading').textContent='收藏地點 '+bookmarks.length;
+  $('routeHeading').textContent='儲存路線 '+routes.length;
+  for(const bookmark of bookmarks)bookmarkRoot.append(libraryItem(bookmark.name||'收藏',fmtPoint(bookmark.point),[
+    ['瞬移',()=>sendCommand('teleport',bookmark.point,'已瞬移到收藏位置')],
+    ['導航',()=>sendCommand('navigate',{...bookmark.point,usePath:checked('usePath')},'已開始導航')],
+    ['刪除',()=>sendCommand('deleteBookmark',{id:bookmark.id},'收藏已刪除'),'danger']
+  ]));
+  for(const route of routes)routeRoot.append(libraryItem(route.name||'路線',(route.points||[]).length+' 個節點',[
+    ['循環',()=>sendCommand('loop',{points:route.points||[],usePath:checked('routePath')},'已開始循環移動')],
+    ['多點',()=>sendCommand('multiStop',{points:route.points||[],usePath:checked('routePath')},'已開始多點移動')],
+    ['刪除',()=>sendCommand('deleteRoute',{id:route.id},'路線已刪除'),'danger']
+  ]));
+  if(!bookmarks.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='尚無收藏，從位置工具加入即可';bookmarkRoot.append(empty)}
+  if(!routes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='尚無路線';routeRoot.append(empty)}
+  const readonly=currentAccess!=='controller';
+  for(const button of $('libraryCard').querySelectorAll('[data-command]'))button.disabled=readonly;
+}
+function libraryItem(title,body,actions){
+  const element=document.createElement('div');element.className='library-item';
+  const titleElement=document.createElement('div');titleElement.className='item-title';titleElement.textContent=title;
+  const bodyElement=document.createElement('div');bodyElement.className='item-body';bodyElement.textContent=body;
+  const actionRoot=document.createElement('div');actionRoot.className='item-actions';
+  for(const[label,handler,kind]of actions){const button=document.createElement('button');button.type='button';button.textContent=label;button.className='button compact'+(kind?' '+kind:'');button.dataset.command='';button.onclick=handler;actionRoot.append(button)}
+  element.append(titleElement,bodyElement,actionRoot);return element;
+}
+function bindDisclosure(buttonId,targetId){
+  const button=$(buttonId),target=$(targetId);
+  button.addEventListener('click',()=>{
+    const show=target.hidden;
+    target.hidden=!show;
+    button.setAttribute('aria-expanded',String(show));
+    button.querySelector('.chevron').textContent=show?'▴':'▾';
+  });
+}
+for(const toggle of document.querySelectorAll('.identity-toggle'))toggle.addEventListener('click',()=>{
+  const panel=$('identityPanel'),show=panel.hidden;
+  panel.hidden=!show;
+  for(const item of document.querySelectorAll('.identity-toggle'))item.setAttribute('aria-expanded',String(show));
+});
+$('identityButton').addEventListener('click',()=>{
+  persist('locwarp-viewer-name',$('viewerName').value||'瀏覽器');
+  persist('locwarp-requested-role',$('requestedRole').value);
+  if(ws){reconnectRequested=true;ws.close(1000,'identity changed')}else connect();
+});
+for(const tab of document.querySelectorAll('.nav-tab')){
+  tab.addEventListener('click',()=>{
+    for(const item of document.querySelectorAll('.nav-tab')){const active=item===tab;item.classList.toggle('active',active);item.setAttribute('aria-selected',String(active));$(item.dataset.page).hidden=!active}
+    if(tab.dataset.page==='locationPage'&&remoteMap)setTimeout(()=>remoteMap.invalidateSize(),0);
+    window.scrollTo({top:0,behavior:'smooth'});
+  });
+}
+for(const button of document.querySelectorAll('[data-location-mode]'))button.addEventListener('click',()=>selectLocationMode(button.dataset.locationMode));
+for(const button of document.querySelectorAll('[data-step-mode]'))button.addEventListener('click',()=>selectStepMode(button.dataset.stepMode));
+bindDisclosure('movementDisclosure','movementSettingsCard');
+bindDisclosure('libraryDisclosure','libraryCard');
+bindDisclosure('mapToolsDisclosure','mapToolsPanel');
+$('hookInfoButton').addEventListener('click',()=>{const card=$('hookInfoCard');card.hidden=!card.hidden;$('hookInfoButton').textContent=card.hidden?'Hook 說明':'收合說明'});
+$('enableButton').addEventListener('click',()=>{const enabled=!(lastStatus&&lastStatus.mockEnabled);sendCommand('setEnabled',{enabled},enabled?'位置模擬已啟用':'位置模擬已關閉')});
+$('teleportButton').addEventListener('click',()=>pointCommand('teleport'));
+$('mapSearchButton').addEventListener('click',searchMapAddress);
+$('mapSearch').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();searchMapAddress()}});
+$('pasteCoordinateButton').addEventListener('click',pasteCoordinateFromClipboard);
+$('mapLocateButton').addEventListener('click',()=>{const point=readCoordinateInputs();if(point)selectMapPoint(point,true)});
+$('mapWaypointButton').addEventListener('click',()=>{const point=readCoordinateInputs();if(point)addMapWaypoint(point)});
+$('mapBookmarkButton').addEventListener('click',()=>{const point=readCoordinateInputs();if(point)saveBookmark(point)});
+$('mapSearchCancelButton').addEventListener('click',()=>$('mapSearchDialog').close());
+$('mapSearchDialog').addEventListener('click',event=>{if(event.target===$('mapSearchDialog'))$('mapSearchDialog').close()});
+$('routeText').addEventListener('input',updateMapRoute);
+for(const button of document.querySelectorAll('[data-map-action]'))button.addEventListener('click',()=>{
+  const point=mapMenuPoint,action=button.dataset.mapAction;
+  hideMapActionMenu();
+  if(!point)return;
+  if(action==='teleport'){pointCommand('teleport',point);return}
+  if(action==='navigate'){pointCommand('navigate',point);return}
+  if(action==='waypoint'){addMapWaypoint(point);return}
+  if(action==='bookmark')saveBookmark(point);
+});
+$('setSpeedButton').addEventListener('click',setSpeed);
+$('locationPrimaryButton').addEventListener('click',runLocationPrimary);
+$('stopButton').addEventListener('click',()=>sendCommand('stop',{},'移動已終止'));
+$('refreshButton').addEventListener('click',refresh);
+$('restoreButton').addEventListener('click',()=>sendCommand('restore',{},'已還原真實定位'));
+$('saveRouteButton').addEventListener('click',saveRoute);
+$('straightLineButton').addEventListener('click',()=>{
+  const enabled=!checked('straightLine');
+  $('straightLine').checked=enabled;
+  $('usePath').checked=!enabled;
+  $('straightLineButton').classList.toggle('on',enabled);
+  $('straightLineButton').setAttribute('aria-pressed',String(enabled));
+  sendCommand('setStraightLine',{enabled},enabled?'已切換為直線移動':'已切換為沿道路移動');
+});
+$('stepPrimaryButton').addEventListener('click',()=>{
+  const step=lastStatus&&lastStatus.steps||{};
+  if(step.running&&step.mode==='single'){sendCommand('toggleStepsPause',{},step.paused?'已繼續注入步數':'已暫停注入步數','singleStepResult');return}
+  const steps=Math.floor(num('stepCount',0));
+  if(steps<1||steps>200000){showResult('singleStepResult','指定步數需介於 1 到 200000',false);return}
+  sendCommand('startSteps',{steps},'已開始注入 '+steps+' 步','singleStepResult');
+});
+$('stepStopButton').addEventListener('click',()=>sendCommand('stopSteps',{},'已終止注入步數','singleStepResult'));
+$('loopStepPrimaryButton').addEventListener('click',()=>{
+  const step=lastStatus&&lastStatus.steps||{};
+  if(step.running&&step.mode==='loop'){sendCommand('toggleStepsPause',{},step.paused?'已繼續循環新增':'已暫停循環新增','loopStepResult');return}
+  sendCommand('startStepLoop',{},'已開始循環新增步數','loopStepResult');
+});
+$('loopStepStopButton').addEventListener('click',()=>sendCommand('stopSteps',{},'已終止循環新增','loopStepResult'));
+$('followStepButton').addEventListener('click',()=>{
+  const step=lastStatus&&lastStatus.steps||{},enabled=!step.followEnabled;
+  sendCommand('setStepFollow',{enabled},enabled?'已啟用自動跟隨':'已關閉自動跟隨','followStepResult');
+});
+selectLocationMode('navigate');
+selectStepMode('single');
+setCoordinateInputs({lat:25.033964,lng:121.564468});
+initRemoteMap();
+applyAccess('pending');
+connect().catch(()=>setConnection('端對端初始化失敗','offline'));
+</script></body></html>

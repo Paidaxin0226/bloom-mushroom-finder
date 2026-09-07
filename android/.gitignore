@@ -1,0 +1,29 @@
+# Android / Gradle
+.gradle/
+build/
+app/build/
+local.properties
+
+# Local SDK and temporary build tools
+.android-sdk/
+.tmp/
+release-assets/
+output/
+
+# Relay server
+relay-server/node_modules/
+relay-server/.env
+relay-server/cloudflared.yml
+
+# Signing secrets
+signing/*.keystore
+signing/*.jks
+signing/signing.properties
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+*.log
+.DS_Store
+Thumbs.db

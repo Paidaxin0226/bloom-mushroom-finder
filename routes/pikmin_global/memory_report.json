@@ -1,0 +1,11 @@
+{
+  "schema": "bloompilot.geo-route-memory-report.v1",
+  "measured_at": "2026-09-02T09:48:12+00:00",
+  "route": "E:\\BloomPilot\\routes\\pikmin_global\\pikmin_all_25012_cities.json",
+  "file_size_bytes": 18078575,
+  "waypoints": 25012,
+  "search_points": 15255195,
+  "python_traced_current_bytes_after_raw_json_release": 69727523,
+  "python_traced_peak_bytes_during_parse_and_normalize": 173737262,
+  "python_traced_peak_mib": 165.69
+}
