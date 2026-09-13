@@ -8,7 +8,7 @@ if not exist "pyproject.toml" goto :project_missing
 
 if not exist ".venv\Scripts\python.exe" (
   echo [BloomPilot] 第一次啟動，正在建立 Python 環境...
-  call "01_安裝環境.bat"
+  call "安裝環境.bat"
   if errorlevel 1 goto :setup_failed
 )
 
@@ -63,7 +63,7 @@ pause
 exit /b 1
 
 :environment_broken
-echo [BloomPilot] .venv 或 FastAPI backend 不完整，請重新執行 01_安裝環境.bat。
+echo [BloomPilot] .venv 或 FastAPI backend 不完整，請重新執行 安裝環境.bat。
 pause
 exit /b 1
 
@@ -73,7 +73,7 @@ pause
 exit /b 1
 
 :frontend_missing
-echo [BloomPilot] 尚未安裝 frontend node_modules，請先正常啟動一次或執行 01_安裝環境.bat。
+echo [BloomPilot] 尚未安裝 frontend node_modules，請先正常啟動一次或執行 安裝環境.bat。
 exit /b 1
 
 :frontend_setup_failed

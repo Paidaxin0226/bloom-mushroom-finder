@@ -376,7 +376,7 @@ class DiscordWebhookNotifier:
         self._sender = sender
         self._bot_sender = bot_sender
         self._error_callback = error_callback
-        self._queue: queue.Queue[tuple[str, dict[str, Any], object, list[Mapping[str, Any]]] | None] = queue.Queue(queue_size)
+        self._queue: queue.Queue[tuple[str, object, list[Mapping[str, Any]]] | None] = queue.Queue(queue_size)
         self._closed = threading.Event()
         self._thread_lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -399,9 +399,9 @@ class DiscordWebhookNotifier:
         if not isinstance(raw, Mapping) or raw.get("enabled") is not True:
             return False
         try:
-            destination = normalize_discord_webhook_settings({DISCORD_WEBHOOK_SECTION: raw})[DISCORD_WEBHOOK_SECTION]
+            normalize_discord_webhook_settings({DISCORD_WEBHOOK_SECTION: raw})
             self._ensure_thread()
-            self._queue.put_nowait((job_kind, destination, copy.deepcopy(location), copy.deepcopy(list(detections))))
+            self._queue.put_nowait((job_kind, copy.deepcopy(location), copy.deepcopy(list(detections))))
             return True
         except (ValueError, queue.Full) as exc:
             message = "Discord 播報佇列已滿，已略過本次命中。" if isinstance(exc, queue.Full) else str(exc)
@@ -415,15 +415,20 @@ class DiscordWebhookNotifier:
             try:
                 if item is None:
                     return
-                job_kind, destination, location, detections = item
+                job_kind, location, detections = item
                 try:
                     from .discord_bot import post_discord_bot, resolve_bot_channel
 
-                    is_bot = destination["mode"] == "bot"
-                    channel = resolve_bot_channel(destination["bot_token"], destination["channel_id"]) if is_bot else ""
                     for payload, files in build_discord_hit_messages(job_kind, location, detections):
                         if self._closed.is_set():
                             break
+                        # Read saved settings for every delivery, including queued batches.
+                        raw = self._settings_provider().get(DISCORD_WEBHOOK_SECTION)
+                        if not isinstance(raw, Mapping) or raw.get("enabled") is not True:
+                            break
+                        destination = normalize_discord_webhook_settings({DISCORD_WEBHOOK_SECTION: raw})[DISCORD_WEBHOOK_SECTION]
+                        is_bot = destination["mode"] == "bot"
+                        channel = resolve_bot_channel(destination["bot_token"], destination["channel_id"]) if is_bot else ""
                         if is_bot:
                             (self._bot_sender or post_discord_bot)(destination["bot_token"], channel, payload, files=files)
                         elif files:

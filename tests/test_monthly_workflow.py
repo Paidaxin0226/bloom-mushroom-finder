@@ -19,6 +19,7 @@ from bloompilot.monthly_route import (
     build_monthly_background_route,
     ensure_monthly_background_route,
 )
+from bloompilot.phone_automation import build_rectangular_scan_points
 from bloompilot.route_library import RouteLibrary
 from bloompilot.web.runtime import AppRuntime
 
@@ -209,7 +210,7 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
         document = build_monthly_background_route(backgrounds)
         self.assertEqual(document["metadata"]["towns"], ["antalya", "bangkok"])
         self.assertEqual(document["metadata"]["waypoint_count"], 2)
-        self.assertEqual(document["metadata"]["total_search_points"], 149)
+        self.assertEqual(document["metadata"]["total_search_points"], 113)
 
         routes = self.root / "routes"
         relative, _ = ensure_monthly_background_route(backgrounds, routes)
@@ -217,6 +218,72 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
         self.assertEqual(relative, MONTHLY_BACKGROUND_ROUTE)
         self.assertEqual(len(library.waypoints(relative)), 2)
         self.assertEqual(library.list(), [])
+
+    def test_monthly_routes_cover_every_rectangle_cell_with_smaller_bounds(self) -> None:
+        backgrounds = self.root / "data/source/backgrounds"
+        towns = (
+            "antalya", "bangkok", "berlin", "hong_kong", "las_vegas", "london",
+            "osaka", "paris", "seoul", "singapore", "sydney", "taipei", "tokyo",
+        )
+        for town in towns:
+            directory = backgrounds / town
+            directory.mkdir(parents=True)
+            (directory / "background.png").write_bytes(b"png")
+
+        routes = self.root / "routes"
+        relative, document = ensure_monthly_background_route(backgrounds, routes)
+        waypoints = RouteLibrary(routes).waypoints(relative)
+        self.assertEqual(len(waypoints), 13)
+        self.assertLess(document["metadata"]["total_search_points"], 756)
+        total = 0
+        for waypoint in waypoints:
+            with self.subTest(town=waypoint.id):
+                self.assertIsNone(waypoint.scan_spans)
+                left, right, up, down = waypoint.resolved_radii
+                self.assertTrue(all(1 <= radius <= 5 for radius in (left, right, up, down)))
+                points = build_rectangular_scan_points(
+                    waypoint.horizontal_radius, waypoint.vertical_radius,
+                    left_radius=left, right_radius=right, up_radius=up, down_radius=down,
+                )
+                coordinates = {(point.grid_x, point.grid_y) for point in points}
+                expected = {
+                    (x, y) for x in range(-left, right + 1)
+                    for y in range(-down, up + 1)
+                }
+                self.assertEqual(coordinates, expected)
+                self.assertEqual(len(points), len(coordinates))
+                self.assertEqual(waypoint.point_count, len(points))
+                self.assertEqual((points[0].grid_x, points[0].grid_y), (0, 0))
+                total += len(points)
+        self.assertEqual(document["metadata"]["total_search_points"], total)
+
+    def test_monthly_route_replaces_cached_cross_and_keeps_updated_route_stable(self) -> None:
+        backgrounds = self.root / "data/source/backgrounds"
+        directory = backgrounds / "berlin"
+        directory.mkdir(parents=True)
+        (directory / "background.png").write_bytes(b"png")
+        legacy = build_monthly_background_route(backgrounds)
+        legacy["metadata"]["total_search_points"] = 49
+        legacy["sequence"]["waypoints"][0].update(
+            horizontal_radius=12, vertical_radius=12,
+            left_radius=12, right_radius=12, up_radius=12, down_radius=12,
+            scan_spans=[[y, -12, 12] if y == 0 else [y, 0, 0] for y in range(-12, 13)],
+        )
+        routes = self.root / "routes"
+        destination = routes / MONTHLY_BACKGROUND_ROUTE
+        destination.parent.mkdir(parents=True)
+        destination.write_text(json.dumps(legacy), encoding="utf-8")
+
+        relative, updated = ensure_monthly_background_route(backgrounds, routes)
+        waypoint = RouteLibrary(routes).waypoints(relative)[0]
+        self.assertIsNone(waypoint.scan_spans)
+        self.assertEqual(waypoint.resolved_radii, (5, 5, 5, 5))
+        self.assertEqual(updated["metadata"]["total_search_points"], 121)
+        self.assertNotIn("scan_spans", updated["sequence"]["waypoints"][0])
+        saved = destination.read_bytes()
+        _, unchanged = ensure_monthly_background_route(backgrounds, routes)
+        self.assertEqual(unchanged, updated)
+        self.assertEqual(destination.read_bytes(), saved)
 
     def test_runtime_trains_resident_before_event_and_never_promotes_event_model(self) -> None:
         backgrounds = self.store.backgrounds_dir("2026-09") / "fixed-route"
@@ -263,8 +330,8 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
             {"status": {"state": "completed", "checkpoint": str(event_best)}},
         ]
         with (
-            patch.object(self.store, "dataset_config", return_value={}),
-            patch.object(runtime, "config", return_value={}),
+            patch.object(self.store, "dataset_config", return_value=self.config),
+            patch.object(runtime, "config", return_value=self.config),
             patch.object(runtime.jobs, "start", side_effect=lambda _kind, runner: runner(context)),
             patch("bloompilot.web.runtime.generate_dataset", side_effect=datasets),
             patch.object(runtime, "_run_training_process", side_effect=training_results) as train_stage,

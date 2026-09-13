@@ -24,6 +24,8 @@ generation:
   # Progress is reported every parallel_workers images (fixed by the program).
   # Real screenshots usually contain one target. Counts are sampled by these weights.
   # Values do not have to add up to exactly 1; they are normalized automatically.
+  # Count 0 creates an empty-label negative. Use only with verified target-free
+  # source backgrounds; never silently label unreviewed real mushrooms as background.
   target_count_probabilities:
     1: 0.90
     2: 0.08
@@ -33,7 +35,8 @@ generation:
 
   # Fixed by the program; changing this value has no effect.
   square_size_pixels: 256
-  target_padding_pixels: 16
+  # Leave room for 248px-wide activity sprites inside the fixed 256px box.
+  target_padding_pixels: 4
   # Recognition uses the original sprite exactly as supplied. Only x/y changes.
   preserve_original_target_pixels: true
   trim_transparent_padding: false

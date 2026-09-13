@@ -8,9 +8,9 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -106,7 +106,7 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
         ],
         allow_origin_regex=r"^http://(?:localhost|127\.0\.0\.1)(?::[0-9]+)?$",
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["Content-Type"],
     )
 
@@ -157,6 +157,20 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
     @app.get("/api/device/screen-control")
     def screen_control_status() -> dict[str, object]:
         return app_runtime.screen_control.status()
+
+    @app.get("/api/device/phone-state")
+    def phone_state(serial: str = Query(min_length=1, max_length=200)) -> dict[str, Any]:
+        try:
+            return app_runtime.phone_state(serial)
+        except Exception as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/device/wake")
+    def wake_phone(request: DeviceConnectRequest) -> dict[str, Any]:
+        try:
+            return app_runtime.wake_phone(request.serial)
+        except Exception as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/device/screen-control")
     def open_screen_control() -> dict[str, object]:
@@ -214,6 +228,13 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
     def put_settings(settings: dict[str, Any] = Body(...)) -> dict[str, Any]:
         try:
             return app_runtime.save_settings(settings)
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.patch("/api/settings")
+    def patch_settings(settings: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            return app_runtime.patch_settings(settings)
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -280,8 +301,10 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/monthly-activity/background")
-    def get_monthly_activity_background(cycle: str, path: str) -> FileResponse:
+    def get_monthly_activity_background(cycle: str, path: str, thumbnail: bool = False) -> Response:
         try:
+            if thumbnail:
+                return Response(app_runtime.monthly_background_thumbnail(cycle, path), media_type="image/jpeg")
             return FileResponse(app_runtime.monthly_background_file(cycle, path))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -292,6 +315,17 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
     def delete_monthly_activity_background(cycle: str, path: str) -> dict[str, Any]:
         try:
             return app_runtime.delete_monthly_background(cycle, path)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/monthly-activity/delete-backgrounds")
+    def delete_monthly_activity_backgrounds(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            return app_runtime.delete_monthly_backgrounds(str(payload.get("cycle") or ""), payload.get("paths"))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
@@ -437,6 +471,24 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/pause-request")
+    def request_recognition_pause(job_id: str) -> dict[str, Any]:
+        try:
+            return job_payload(app_runtime.request_recognition_pause(job_id))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/cancel-pause")
+    def cancel_recognition_pause(job_id: str) -> dict[str, Any]:
+        try:
+            return job_payload(app_runtime.cancel_pending_recognition_pause(job_id))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/jobs/{job_id}/resume")
     def resume_recognition(

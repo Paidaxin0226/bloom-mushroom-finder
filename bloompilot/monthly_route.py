@@ -25,38 +25,29 @@ class BackgroundTown:
     right: int
     up: int
     down: int
-    cross: bool = False
 
     @property
     def point_count(self) -> int:
-        if self.cross:
-            return self.left + self.right + self.up + self.down + 1
         return (self.left + self.right + 1) * (self.up + self.down + 1)
 
 
-# These centers and bounds are the ones used to create data/source/backgrounds.
+# Keep the source dataset's town centers. Monthly captures cover full rectangles;
+# each original directional radius is halved (rounded up) and capped at 5 swipes.
 BACKGROUND_TOWNS = (
-    BackgroundTown("antalya", "Antalya", 36.8969, 30.7133, 24, 24, 24, 4, True),
-    BackgroundTown("bangkok", "Bangkok", 13.7563, 100.5018, 4, 4, 4, 3),
-    BackgroundTown("berlin", "Berlin", 52.5200, 13.4050, 12, 12, 12, 12, True),
-    BackgroundTown("hong_kong", "Hong Kong", 22.3193, 114.1694, 4, 3, 2, 3),
-    BackgroundTown("las_vegas", "Las Vegas", 36.1699, -115.1398, 1, 13, 1, 1, True),
-    BackgroundTown("london", "London", 51.5074, -0.1278, 20, 20, 19, 18, True),
-    BackgroundTown("osaka", "Osaka", 34.7025, 135.4960, 4, 3, 3, 3),
-    BackgroundTown("paris", "Paris", 48.8566, 2.3522, 12, 12, 12, 12, True),
-    BackgroundTown("seoul", "Seoul", 37.5665, 126.9780, 5, 3, 3, 3),
-    BackgroundTown("singapore", "Singapore", 1.2903, 103.8520, 3, 4, 3, 3),
-    BackgroundTown("sydney", "Sydney", -33.8688, 151.2093, 5, 3, 3, 3),
-    BackgroundTown("taipei", "Taipei", 25.0330, 121.5654, 4, 3, 3, 3),
-    BackgroundTown("tokyo", "Tokyo", 35.6812, 139.7671, 5, 3, 4, 3),
+    BackgroundTown("antalya", "Antalya", 36.8969, 30.7133, 5, 5, 5, 2),
+    BackgroundTown("bangkok", "Bangkok", 13.7563, 100.5018, 2, 2, 2, 2),
+    BackgroundTown("berlin", "Berlin", 52.5200, 13.4050, 5, 5, 5, 5),
+    BackgroundTown("hong_kong", "Hong Kong", 22.3193, 114.1694, 2, 2, 1, 2),
+    BackgroundTown("las_vegas", "Las Vegas", 36.1699, -115.1398, 1, 5, 1, 1),
+    BackgroundTown("london", "London", 51.5074, -0.1278, 5, 5, 5, 5),
+    BackgroundTown("osaka", "Osaka", 34.7025, 135.4960, 2, 2, 2, 2),
+    BackgroundTown("paris", "Paris", 48.8566, 2.3522, 5, 5, 5, 5),
+    BackgroundTown("seoul", "Seoul", 37.5665, 126.9780, 3, 2, 2, 2),
+    BackgroundTown("singapore", "Singapore", 1.2903, 103.8520, 2, 2, 2, 2),
+    BackgroundTown("sydney", "Sydney", -33.8688, 151.2093, 3, 2, 2, 2),
+    BackgroundTown("taipei", "Taipei", 25.0330, 121.5654, 2, 2, 2, 2),
+    BackgroundTown("tokyo", "Tokyo", 35.6812, 139.7671, 3, 2, 2, 2),
 )
-
-
-def _cross_spans(town: BackgroundTown) -> list[list[int]]:
-    spans: list[list[int]] = []
-    for y in range(-town.down, town.up + 1):
-        spans.append([y, -town.left, town.right] if y == 0 else [y, 0, 0])
-    return spans
 
 
 def build_monthly_background_route(background_root: Path) -> dict[str, Any]:
@@ -92,8 +83,6 @@ def build_monthly_background_route(background_root: Path) -> dict[str, Any]:
             "range_unit": "km",
             "coverage_source": "current_background_dataset",
         }
-        if town.cross:
-            waypoint["scan_spans"] = _cross_spans(town)
         waypoints.append(waypoint)
 
     now = datetime.now(timezone.utc).isoformat()

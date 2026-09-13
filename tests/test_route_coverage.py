@@ -149,7 +149,7 @@ const read = (path) => readFileSync(`frontend/src/${path}`, 'utf8')
 const panel = read('components/GeoPanel.tsx')
 const helpers = panel.slice(panel.indexOf('const id ='), panel.indexOf('\nfunction storedSequences'))
 const updater = panel.slice(panel.indexOf('  const updateWaypoint ='), panel.indexOf('  const moveWaypoint ='))
-const source = [read('projectDefaults.ts'), read('routeCoverage.ts'), helpers, updater]
+const source = [read('projectDefaults.ts'), read('routeCoverage.ts'), read('utils/sequenceEditor.ts'), helpers, updater]
   .join('\n').replace(/^import .*$/gm, '').replace(/^export /gm, '')
 const checks = `
 const radii = (item) => [item.left_radius, item.right_radius, item.up_radius, item.down_radius]
@@ -186,17 +186,19 @@ for (const axis of ['horizontal', 'vertical']) {
   }
 }
 let sequence = { waypoints: [original] }
+const edited = { current: false }
+const originals = { current: new Map() }
 const setSequenceDirty = () => {}
 const setSequence = (update) => { sequence = update(sequence) }
 for (const [direction, axis] of [['left', 'horizontal'], ['right', 'horizontal'], ['up', 'vertical'], ['down', 'vertical']]) {
   sequence = { waypoints: [original] }
   const item = sequence.waypoints[0]
   const index = 0
-  const pattern = new RegExp('onChange=\\\\{(\\\\(event\\\\) => \\\\{ const value = Number\\\\(event.target.value\\\\); updateWaypoint\\\\(index, \\\\{ ' + direction + '_km: value, ' + direction + '_radius: .*? \\\\}\\\\) \\\\})\\\\}')
+  const pattern = new RegExp('onValue=\\\\{(value => updateWaypoint\\\\(index, \\\\{ ' + direction + '_km: value, ' + direction + '_radius: .*? \\\\}\\\\))\\\\}')
   const match = panel.match(pattern)
   assert.ok(match, direction + ' edit callback missing')
   const edit = eval(match[1])
-  edit({ target: { value: String(gridStepKm(axis) * 5) } })
+  edit(gridStepKm(axis) * 5)
   assert.equal(sequence.waypoints[0][direction + '_radius'], 10)
   assert.equal(sequence.waypoints[0].scan_spans, undefined)
   assert.equal(parse(sequence.waypoints[0])[direction + '_radius'], 10)

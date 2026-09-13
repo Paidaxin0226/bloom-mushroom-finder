@@ -90,6 +90,35 @@ class ArtifactManagerTests(unittest.TestCase):
         self.assertFalse((manager.training_root / "LATEST_MODEL.txt").exists())
         self.assertEqual(manager.verify(manager.artifact("dataset:dataset_a")), [])
 
+    def test_model_classes_survive_dataset_cleanup_and_catalog_refresh(self) -> None:
+        from bloompilot.web.runtime import _model_class_names
+        from unittest.mock import patch
+
+        metadata_path = self.dataset / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["class_names"] = ["Event_2026_09", "Large_Blue"]
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        manager = ArtifactManager(self.config)
+        manager.register_training_run(self.run, self.dataset, status="completed")
+        metadata_path.unlink()
+        (self.dataset / "data.yaml").unlink()
+        manager.register_training_run(self.run, self.dataset, status="completed")
+        with patch("bloompilot.web.runtime._checkpoint_class_names", side_effect=AssertionError("should use saved classes")):
+            self.assertEqual(_model_class_names(self.run / "weights/best.pt", self.root), metadata["class_names"])
+
+    def test_stale_checkpoint_progress_does_not_reopen_early_stopped_run(self) -> None:
+        manager = ArtifactManager(self.config)
+        manager.register_training_run(self.run, self.dataset, status="completed", completed_epochs=8, total_epochs=10)
+        manager.control_root.mkdir(parents=True)
+        (manager.control_root / "status.json").write_text(json.dumps({
+            "state": "running", "checkpoint": str(self.run / "weights/last.pt"),
+            "dataset": str(self.dataset), "completed_epoch": 8, "total_epochs": 10,
+        }), encoding="utf-8")
+        manager.reconcile_control_status()
+        manifest = json.loads((self.run / ".artifact.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual(manifest["completed_epochs"], 8)
+
     def test_delete_completed_run_removes_directory_and_pointer(self) -> None:
         manager = ArtifactManager(self.config)
         manager.register_training_run(
@@ -179,6 +208,23 @@ class ArtifactManagerTests(unittest.TestCase):
         self.assertFalse(extra_base.exists())
         self.assertFalse(periodic.exists())
         self.assertFalse((self.run / "weights" / "last.pt").exists())
+
+    def test_cache_cleanup_preserves_arrays_without_source_images(self) -> None:
+        orphan = self.dataset / "images/train/orphan.npy"
+        orphan.write_bytes(b"irreplaceable")
+        manager = ArtifactManager(self.config)
+        self.assertEqual(manager.clear_rebuildable_cache(apply=True)["file_count"], 0)
+        self.assertTrue(orphan.exists())
+
+    def test_cache_cleanup_refuses_active_training_but_allows_preview(self) -> None:
+        cache = self.dataset / "images/train/one.npy"
+        cache.write_bytes(b"cache")
+        manager = ArtifactManager(self.config)
+        manager.register_training_run(self.run, self.dataset, status="running")
+        self.assertEqual(manager.clear_rebuildable_cache()["file_count"], 1)
+        with self.assertRaisesRegex(RuntimeError, "訓練"):
+            manager.clear_rebuildable_cache(apply=True)
+        self.assertTrue(cache.exists())
 
 
 if __name__ == "__main__":

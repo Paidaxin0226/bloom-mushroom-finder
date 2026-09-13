@@ -60,6 +60,7 @@ export interface ProjectRouteInfo {
 
 export interface DeviceStatus {
   connected: boolean
+  phone?: PhoneState
   serial?: string
   scale_calibration_required?: boolean
   current?: Coordinate
@@ -71,12 +72,24 @@ export interface DeviceStatus {
   [key: string]: unknown
 }
 
+export interface PhoneState {
+  serial: string
+  adb_state: 'device' | 'offline' | 'missing' | 'unauthorized' | 'recovery' | 'bootloader' | 'sideload' | 'unknown' | 'unselected'
+  screen_state: 'on' | 'off' | 'dozing' | 'unknown'
+  locked: boolean | null
+  battery_percent: number | null
+  power_connected: boolean | null
+  checked_at: string
+  error: string | null
+}
+
 export type JobState = 'queued' | 'running' | 'stopping' | 'completed' | 'cancelled' | 'error'
 
 export interface JobRecord {
   id: string
   kind: string
   state: JobState
+  revision?: number
   message: string
   completed: number
   total: number
@@ -85,6 +98,8 @@ export interface JobRecord {
   result?: unknown
   error?: string | null
   paused?: boolean
+  pause_requested?: boolean
+  sequence_name?: string | null
   resuming?: boolean
   current_waypoint?: {
     sequence_index: number
@@ -115,6 +130,8 @@ export interface ModelInfo {
   size_bytes: number
   default: boolean
   class_names?: string[]
+  cycle?: string
+  contains_activity?: boolean
 }
 
 export interface DatasetInfo {
@@ -129,6 +146,7 @@ export interface MonthlyBackground {
   path: string
   name: string
   route: string
+  waypoint?: string
   size_bytes: number
   modified_ns: number
 }
@@ -145,6 +163,7 @@ export interface MonthlyWorkflowStatus {
   resident_model: string | null
   resident_updated_at?: string | null
   resident_source?: string | null
+  resident_cycle?: string | null
   resident_class_names: string[]
   backgrounds: MonthlyBackground[]
   background_count: number

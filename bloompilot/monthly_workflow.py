@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import shutil
 import threading
 from copy import deepcopy
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -20,11 +22,11 @@ from PIL import Image
 from .dataset_builder import IMAGE_EXTENSIONS, discover_targets
 from .device_control import (
     DeviceControlError,
+    UsbConnectionError,
     UsbDeviceController,
-    reconnect_usb,
     restart_locwarp,
 )
-from .memory_watchdog import PikminMemoryWatchdog
+from .memory_watchdog import PikminMemoryWatchdog, RESTART_SCREEN_MAP, classify_pikmin_restart_screen
 from .paths import (
     MONTHLY_ACTIVITY_DIR,
     MONTHLY_ACTIVITY_STATE_PATH,
@@ -34,6 +36,7 @@ from .paths import (
 from .phone_automation import (
     AdbClient,
     CaptureOutcome,
+    MapRecoveryError,
     ScanPoint,
     atomic_write_bytes,
     run_rectangular_scan,
@@ -46,6 +49,17 @@ _CYCLE_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_TARGET_BYTES = 20 * 1024 * 1024
 _STATE_VERSION = 1
+
+
+@lru_cache(maxsize=128)
+def _background_thumbnail(path: str, modified_ns: int, size_bytes: int) -> bytes:
+    # Metadata is part of the key so recollecting the same grid replaces its preview.
+    del modified_ns, size_bytes
+    with Image.open(path) as image:
+        image.thumbnail((240, 360))
+        stream = io.BytesIO()
+        image.convert("RGB").save(stream, "JPEG", quality=78)
+        return stream.getvalue()
 
 
 def _now() -> str:
@@ -264,6 +278,30 @@ class MonthlyWorkflowStore:
         candidate.unlink()
         return candidate
 
+    def cleanup_superseded_models(self, config: dict[str, Any], *, keep: Iterable[Path]) -> list[str]:
+        """Remove completed monthly predecessors, never unrelated training experiments."""
+        kept = {path.resolve() for path in keep}
+        if not kept or any(not path.is_file() for path in kept):
+            raise FileNotFoundError("替換模型尚未完整保存，無法刪除舊模型。")
+        root = self._configured_path(config, "training_runs", "outputs/training")
+        removed = []
+        for run in sorted(root.iterdir()) if root.is_dir() else []:
+            if not run.is_dir() or not run.resolve().is_relative_to(root):
+                continue
+            manifest = _read_json(run / ".artifact.json")
+            monthly = manifest.get("monthly_workflow")
+            if (manifest.get("status") != "completed"
+                    or not isinstance(monthly, dict)
+                    or monthly.get("role") not in {"resident", "event"}
+                    or not _CYCLE_RE.fullmatch(str(monthly.get("cycle", "")))):
+                continue
+            for path in sorted((run / "weights").glob("*.pt")):
+                resolved = path.resolve()
+                if resolved not in kept and resolved.is_relative_to(root) and path.is_file():
+                    path.unlink()
+                    removed.append(str(resolved))
+        return removed
+
     def _configured_path(
         self,
         config: dict[str, Any],
@@ -420,12 +458,16 @@ class MonthlyWorkflowStore:
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.suffix.casefold() not in IMAGE_EXTENSIONS:
                 continue
-            stat = path.stat()
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue  # Collection may be replacing this directory during a refresh.
             relative = path.relative_to(root).as_posix()
             result.append({
                 "path": relative,
                 "name": path.name,
                 "route": relative.split("/", 1)[0],
+                "waypoint": re.sub(r"^wp_\d+_", "", path.parent.name),
                 "size_bytes": stat.st_size,
                 "modified_ns": stat.st_mtime_ns,
             })
@@ -438,15 +480,34 @@ class MonthlyWorkflowStore:
         return path
 
     def delete_background(self, cycle: str, relative_path: str) -> dict[str, Any]:
+        result = self.delete_backgrounds(cycle, [relative_path])
+        return {"deleted": relative_path, "background_count": result["background_count"]}
+
+    def background_thumbnail(self, cycle: str, relative_path: str) -> bytes:
         path = self.background_file(cycle, relative_path)
+        stat = path.stat()
+        try:
+            return _background_thumbnail(str(path), stat.st_mtime_ns, stat.st_size)
+        except OSError as exc:
+            raise ValueError("背景圖片無法解碼，請查看原圖或刪除損壞的圖片。") from exc
+
+    def delete_backgrounds(self, cycle: str, relative_paths: list[str]) -> dict[str, Any]:
+        if not isinstance(relative_paths, list) or not relative_paths or len(relative_paths) > 500:
+            raise ValueError("每次請選擇 1 至 500 張背景。")
+        if any(not isinstance(item, str) for item in relative_paths):
+            raise ValueError("背景路徑必須是文字。")
         with self._lock:
-            path.unlink()
+            paths = list(dict.fromkeys(self.background_file(cycle, item) for item in relative_paths))
+            # Validate the entire request before removing any file; invalidate approval
+            # first so an I/O failure cannot leave a partially changed set approved.
             manifest = self.manifest(cycle)
             manifest.pop("reviewed_at", None)
             manifest.pop("review_signature", None)
             manifest["updated_at"] = _now()
             _atomic_json(self._manifest_path(cycle), manifest)
-        return {"deleted": relative_path, "background_count": len(self.list_backgrounds(cycle))}
+            for path in paths:
+                path.unlink()
+        return {"deleted": len(paths), "background_count": len(self.list_backgrounds(cycle))}
 
     def mark_collection_started(self, cycle: str, routes: list[str]) -> None:
         manifest = self.manifest(cycle)
@@ -567,10 +628,92 @@ class MonthlyWorkflowStore:
             active["generation"]["excluded_target_directories"] = []
         return active
 
+    def reusable_dataset(self, config: dict[str, Any], cycle: str, role: str) -> Path | None:
+        """Keep the same dataset identity so interrupted training can find last.pt."""
+        manifest = self.manifest(cycle)
+        raw = manifest.get(f"{role}_dataset")
+        if not raw:
+            return None
+        path = Path(str(raw))
+        path = (path if path.is_absolute() else self.project_root / path).resolve()
+        root = self._configured_path(config, "generated_root", "data/generated")
+        metadata = _read_json(path / "metadata.json")
+        stage = metadata.get("monthly_workflow", {})
+        if (
+            not path.is_relative_to(root)
+            or stage.get("cycle") != cycle
+            or stage.get("role") != role
+            or not all((path / name).exists() for name in ("data.yaml", "images", "labels"))
+        ):
+            return None
+        # Re-approving changed backgrounds starts a new dataset. Legacy datasets
+        # carry a creation time rather than the review time stored by newer runs.
+        reviewed_at = manifest.get("reviewed_at")
+        recorded_at = stage.get("reviewed_at") or metadata.get("created_at")
+        if reviewed_at:
+            try:
+                if datetime.fromisoformat(str(recorded_at)) < datetime.fromisoformat(str(reviewed_at)):
+                    return None
+            except (TypeError, ValueError):
+                return None
+        return path
+
+    def completed_training_run(self, config: dict[str, Any], cycle: str, role: str) -> Path | None:
+        """Recover completed stages, including early stopping and pre-promotion exits."""
+        manifest = self.manifest(cycle)
+        root = self._configured_path(config, "training_runs", "outputs/training")
+        raw = manifest.get(f"{role}_training_run")
+        recorded = Path(str(raw)) if raw else None
+        if recorded is not None:
+            recorded = (recorded if recorded.is_absolute() else self.project_root / recorded).resolve()
+        dataset = self.reusable_dataset(config, cycle, role)
+        candidates = ([recorded] if recorded else []) + (
+            sorted(root.iterdir(), reverse=True) if dataset and root.is_dir() else []
+        )
+        for run in candidates:
+            if not run.is_relative_to(root) or not (run / "weights/best.pt").is_file():
+                continue
+            artifact = _read_json(run / ".artifact.json")
+            if artifact.get("status") != "completed":
+                continue
+            stage = artifact.get("monthly_workflow", {})
+            # A promoted resident stage is authoritative even if an older retry
+            # accidentally replaced resident_dataset before failing.
+            resident = self.resident_metadata()
+            source = self.project_root / str(resident.get("source") or "")
+            resident_review_current = True
+            if manifest.get("reviewed_at"):
+                try:
+                    resident_review_current = (
+                        datetime.fromisoformat(str(resident.get("updated_at")))
+                        >= datetime.fromisoformat(str(manifest["reviewed_at"]))
+                    )
+                except (TypeError, ValueError):
+                    resident_review_current = False
+            if (
+                role == "resident" and run == recorded
+                and stage.get("cycle") == cycle and stage.get("role") == role
+                and resident.get("cycle") == cycle
+                and resident_review_current
+                and source.resolve() == (run / "weights/best.pt").resolve()
+                and self.resident_model() is not None
+            ):
+                return run
+            raw_dataset = artifact.get("dataset")
+            if dataset and raw_dataset:
+                saved = Path(str(raw_dataset))
+                saved = (saved if saved.is_absolute() else self.project_root / saved).resolve()
+                if saved == dataset:
+                    return run
+        return None
+
     def annotate_dataset(self, dataset: Path, *, cycle: str, role: str) -> None:
         path = dataset / "metadata.json"
         value = _read_json(path)
         value["monthly_workflow"] = {"cycle": validate_cycle(cycle), "role": role}
+        reviewed_at = self.manifest(cycle).get("reviewed_at")
+        if reviewed_at:
+            value["monthly_workflow"]["reviewed_at"] = reviewed_at
         _atomic_json(path, value)
 
     def status(self, cycle: str) -> dict[str, Any]:
@@ -585,6 +728,7 @@ class MonthlyWorkflowStore:
             "resident_model": str(resident) if resident else None,
             "resident_updated_at": metadata.get("updated_at"),
             "resident_source": metadata.get("source"),
+            "resident_cycle": metadata.get("cycle"),
             "resident_class_names": metadata.get("class_names", []),
             "backgrounds": backgrounds,
             "background_count": len(backgrounds),
@@ -592,7 +736,9 @@ class MonthlyWorkflowStore:
             "baseline_background_count": int(manifest.get("baseline_background_count") or 0),
             "monthly_background_count": int(manifest.get("monthly_background_count") or 0),
             "intermediates_cleaned_at": manifest.get("intermediates_cleaned_at"),
-            "reviewed": self.review_is_current(cycle),
+            "reviewed": bool(manifest.get("reviewed_at")) and manifest.get("review_signature") == [
+                [item["path"], item["size_bytes"], item["modified_ns"]] for item in backgrounds
+            ],
             "reviewed_at": manifest.get("reviewed_at"),
             "activity_targets": self.list_activity_targets(cycle),
             "route_paths": manifest.get("route_paths", []),
@@ -633,6 +779,8 @@ def collect_fixed_route_backgrounds(
         raise ValueError("至少要選擇一條固定背景路線。")
     if settle_seconds < 0:
         raise ValueError("背景等待時間不能小於 0。")
+    if swipe_duration_ms < 1:
+        raise ValueError("滑動時間必須大於 0 毫秒。")
     total = sum(waypoint.point_count for _, waypoints in routes for waypoint in waypoints)
     if total < 1:
         raise ValueError("固定背景路線沒有可蒐集的搜尋格。")
@@ -641,11 +789,6 @@ def collect_fixed_route_backgrounds(
     store.mark_collection_started(cycle, route_paths)
     background_root = store.backgrounds_dir(cycle)
     background_root.mkdir(parents=True, exist_ok=True)
-    for relative_path, _ in routes:
-        route_dir = background_root / _route_key(relative_path)
-        if route_dir.exists():
-            shutil.rmtree(route_dir)
-
     client = AdbClient(adb, serial)
     client.ensure_ready()
     captured = 0
@@ -658,8 +801,10 @@ def collect_fixed_route_backgrounds(
     def command(name: str, payload: dict[str, object] | None = None) -> None:
         try:
             controller.command(name, payload)
-        except DeviceControlError:
-            reconnect_usb(controller, stop_event=stop_event, status=report)
+        except UsbConnectionError:
+            # Decide from the failed operation, not connected: the UI may have
+            # recovered this shared controller since the operation failed.
+            watchdog.recover_usb_connection(controller)
             if stop_event.is_set():
                 return
             controller.command(name, payload)
@@ -673,9 +818,6 @@ def collect_fixed_route_backgrounds(
                     report(f"背景路線 USB 心跳暫時失敗，下一個座標會自動重連：{exc}")
 
     heartbeat = threading.Thread(target=keepalive, name="monthly-background-usb", daemon=True)
-    heartbeat.start()
-    first = routes[0][1][0]
-    command("teleport", {"lat": first.lat, "lng": first.lng})
     watchdog = PikminMemoryWatchdog(
         client,
         stop_event=stop_event,
@@ -684,11 +826,19 @@ def collect_fixed_route_backgrounds(
             controller, stop_event=stop_event, status=report
         ).ok,
     )
-    if not watchdog.prepare_for_scan():
-        keepalive_stop.set()
-        raise RuntimeError("無法將 Pikmin Bloom 準備為背景蒐集所需的 2D 地圖。")
-
+    heartbeat.start()
     try:
+        first = next(waypoint for _, waypoints in routes for waypoint in waypoints)
+        command("teleport", {"lat": first.lat, "lng": first.lng})
+        if not stop_event.is_set() and not watchdog.prepare_for_scan():
+            if not stop_event.is_set():
+                raise RuntimeError("無法將 Pikmin Bloom 準備為背景蒐集所需的 2D 地圖。")
+        # A failed connection/startup must not erase the previous collection.
+        if not stop_event.is_set():
+            for relative_path, _ in routes:
+                route_dir = _safe_relative(background_root, _route_key(relative_path))
+                if route_dir.exists():
+                    shutil.rmtree(route_dir)
         for route_index, (relative_path, waypoints) in enumerate(routes, start=1):
             route_dir = background_root / _route_key(relative_path)
             for waypoint_index, waypoint in enumerate(waypoints, start=1):
@@ -703,30 +853,67 @@ def collect_fixed_route_backgrounds(
                 waypoint_dir.mkdir(parents=True, exist_ok=True)
 
                 def save(point: ScanPoint, payload: bytes) -> CaptureOutcome:
+                    # Focus alone cannot distinguish a loading screen or a 3D view
+                    # inside Pikmin. Reject failed captures before touching the file.
+                    if not payload or classify_pikmin_restart_screen(payload) != RESTART_SCREEN_MAP:
+                        raise MapRecoveryError("背景截圖無法確認為 2D 地圖，這一張不會儲存；已停止蒐集。")
                     path = waypoint_dir / f"{point.stem}.png"
-                    atomic_write_bytes(path, payload)
                     if preview is not None:
                         import cv2
 
                         image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
                         if image is not None:
                             preview(image)
+                    # A retry of this grid replaces its fixed filename atomically.
+                    atomic_write_bytes(path, payload)
                     return CaptureOutcome()
 
                 def before_capture(point: ScanPoint) -> bool:
                     nonlocal connection_generation
-                    reset = watchdog.before_capture(point)
+                    try:
+                        reset = watchdog.before_capture(point)
+                    except DeviceControlError as exc:
+                        if stop_event.is_set():
+                            return False
+                        if (controller.connected and
+                                getattr(controller, "connection_generation", 0) == connection_generation):
+                            raise MapRecoveryError(f"背景路線記憶體恢復失敗：{exc}") from exc
+                        # A preventive LocWarp restart can itself exhaust its
+                        # reconnect budget. Continue through the same bounded
+                        # escalation as an unexpected socket loss.
+                        report(f"記憶體恢復後 USB 仍未連線，正在執行完整恢復：{exc}")
+                        reset = False
                     if stop_event.is_set():
                         return reset
                     if not controller.connected:
-                        command("status")
+                        try:
+                            command("status")
+                        except DeviceControlError as exc:
+                            if stop_event.is_set():
+                                return reset
+                            raise MapRecoveryError(f"背景路線 USB 完整恢復失敗：{exc}") from exc
                     generation = getattr(controller, "connection_generation", 0)
                     if generation != connection_generation:
-                        command("teleport", {"lat": waypoint.lat, "lng": waypoint.lng})
-                        if not watchdog.recover_after_usb_service_restart():
-                            raise RuntimeError("LocWarp 重啟後無法恢復背景蒐集地圖。")
-                        connection_generation = getattr(controller, "connection_generation", 0)
-                        return True
+                        for recovery_round in range(1, 4):
+                            if stop_event.is_set():
+                                return reset
+                            report(f"正在重建背景座標與地圖（{recovery_round}/3）…")
+                            try:
+                                command("teleport", {"lat": waypoint.lat, "lng": waypoint.lng})
+                                position_generation = getattr(controller, "connection_generation", 0)
+                                if stop_event.wait(settle_seconds):
+                                    return reset
+                                recovered = watchdog.recover_after_usb_service_restart()
+                            except DeviceControlError:
+                                recovered = False
+                                position_generation = -1
+                            if (recovered and controller.connected and
+                                    getattr(controller, "connection_generation", 0) == position_generation):
+                                connection_generation = position_generation
+                                return True
+                        if stop_event.is_set():
+                            return reset
+                        raise MapRecoveryError("USB 控制、背景座標與地圖連續 3 次無法同時恢復，已停止蒐集。")
                     return reset
 
                 offset = captured

@@ -18,13 +18,17 @@ import numpy as np
 
 from .paths import BACKGROUND_SOURCE_DIR, PROJECT_ROOT, RECOGNITION_RUNS_DIR
 from .viewport_geo import estimate_detection_coordinate
-from .memory_watchdog import PIKMIN_PACKAGE, PikminMemoryWatchdog
+from .memory_watchdog import (
+    PIKMIN_PACKAGE, PikminMemoryWatchdog, RESTART_SCREEN_MAP,
+    classify_pikmin_restart_screen,
+)
 from .project_defaults import (
     MAP_GESTURE_BOTTOM_FRACTION,
     MAP_GESTURE_TOP_FRACTION,
     MAX_GEO_SEQUENCE_RADIUS,
 )
 from .device_control import UsbDeviceController
+from .detection import filter_terrain_false_positives
 
 
 DIRECTION_ORDER = ("north", "south", "east", "west")
@@ -729,20 +733,36 @@ def restore_recognition_map(
         return MapRestoreResult(False)
     deadline = time.monotonic() + 90.0
     size = client.screen_size()
-    for direction, count in (
-        ("east" if point.grid_x > 0 else "west", abs(point.grid_x)),
-        ("north" if point.grid_y > 0 else "south", abs(point.grid_y)),
-    ):
-        for index in range(count):
-            if stop_event.is_set() or time.monotonic() >= deadline:
-                return MapRestoreResult(False)
-            client.swipe(direction, size, swipe_duration_ms)
-            if stop_event.wait(SCREEN_STABLE_SECONDS):
-                return MapRestoreResult(False)
-            if status is not None and index % 10 == 0:
-                status(f"正在恢復搜尋格：{direction} {index + 1}/{count}…")
-    ready = not stop_event.is_set()
-    return MapRestoreResult(ready, grid_replayed=ready)
+    ensure_map = getattr(watchdog, "ensure_scan_map", None)
+    # A recap can interrupt coordinate recovery too. Rebuild from the new
+    # center instead of finishing the remaining gestures on the wrong page.
+    for _attempt in range(3):
+        reset = False
+        for direction, count in (
+            ("east" if point.grid_x > 0 else "west", abs(point.grid_x)),
+            ("north" if point.grid_y > 0 else "south", abs(point.grid_y)),
+        ):
+            for index in range(count):
+                if stop_event.is_set() or time.monotonic() >= deadline:
+                    return MapRestoreResult(False)
+                if ensure_map is not None and ensure_map():
+                    reset = True
+                    break
+                if stop_event.is_set():
+                    return MapRestoreResult(False)
+                client.swipe(direction, size, swipe_duration_ms)
+                if stop_event.wait(SCREEN_STABLE_SECONDS):
+                    return MapRestoreResult(False)
+                if status is not None and index % 10 == 0:
+                    status(f"正在恢復搜尋格：{direction} {index + 1}/{count}…")
+            if reset:
+                break
+        if not reset and ensure_map is not None:
+            reset = ensure_map()
+        if not reset:
+            ready = not stop_event.is_set()
+            return MapRestoreResult(ready, grid_replayed=ready)
+    return MapRestoreResult(False)
 
 
 def run_rectangular_scan(
@@ -767,6 +787,7 @@ def run_rectangular_scan(
     status: StatusCallback | None = None,
     progress: ProgressCallback | None = None,
     scan_spans: Sequence[Sequence[int]] | None = None,
+    ensure_map: Callable[[], bool] | None = None,
 ) -> ScanSummary:
     """Scan an asymmetric rectangle or its compressed effective-cell mask."""
     if settle_seconds < 0:
@@ -819,10 +840,11 @@ def run_rectangular_scan(
     current_y = 0
     current_ring = -1
     recenter_on_exit = True
-    capture_source = capture_png or client.capture_png
+    raw_capture_source = capture_png or client.capture_png
     reference_signature: np.ndarray | None = None
     consecutive_foreground_recoveries = 0
     foreground_recovery_generation = 0
+    page_recoveries = 0
     stable_seconds = (
         SCREEN_STABLE_SECONDS if screen_stable_seconds is None else screen_stable_seconds
     )
@@ -830,6 +852,36 @@ def run_rectangular_scan(
     def report(text: str) -> None:
         if status is not None:
             status(text)
+
+    def ensure_map_ready() -> bool:
+        nonlocal current_x, current_y, reference_signature, page_recoveries
+        if stop_event.is_set():
+            return False
+        if ensure_map is None:
+            return True
+        try:
+            reset = ensure_map()
+        except Exception as exc:
+            raise MapRecoveryError(f"地圖狀態恢復失敗：{exc}") from exc
+        if reset:
+            page_recoveries += 1
+            if page_recoveries > 3:
+                raise MapRecoveryError("同一搜尋格反覆離開地圖，已停止搜尋。")
+            current_x = current_y = 0
+            reference_signature = None
+        return not stop_event.is_set()
+
+    def capture_source() -> bytes:
+        # A recap can appear between the pre-gesture check and a screenshot.
+        # Discard that frame before YOLO, saving, notifications or coordinates.
+        target_x, target_y = current_x, current_y
+        for _ in range(3):
+            payload = raw_capture_source()
+            if ensure_map is None or (payload and classify_pikmin_restart_screen(payload) == RESTART_SCREEN_MAP):
+                return payload
+            if not ensure_map_ready() or not move_to(target_x, target_y, allow_pause=False):
+                return b""
+        raise MapRecoveryError("連續截圖無法確認為 2D 地圖，已停止搜尋。")
 
     def recover_from_foreground_loss(error: ForegroundAppError) -> bool:
         """Restart at map center; the caller then replays its target grid."""
@@ -889,6 +941,8 @@ def run_rectangular_scan(
     def recenter_safely() -> bool:
         while not stop_event.is_set():
             try:
+                if not ensure_map_ready():
+                    return False
                 client.recenter(size)
                 return True
             except ForegroundAppError as exc:
@@ -914,9 +968,12 @@ def run_rectangular_scan(
     def capture(point: ScanPoint) -> bool:
         nonlocal captured, detection_count, reference_signature, current_x, current_y
         nonlocal consecutive_foreground_recoveries
+        nonlocal page_recoveries
         if stop_event.is_set() or not restore_after_excursion(point.grid_x, point.grid_y):
             return False
         if not ensure_foreground_at(point.grid_x, point.grid_y):
+            return False
+        if not ensure_map_ready() or not move_to(point.grid_x, point.grid_y, allow_pause=False):
             return False
         if before_capture is not None and before_capture(point):
             reference_signature = None
@@ -982,6 +1039,7 @@ def run_rectangular_scan(
             detection_count += outcome.detection_count
         captured += 1
         consecutive_foreground_recoveries = 0
+        page_recoveries = 0
         if progress is not None:
             progress(captured, total_points, point)
         return True
@@ -993,6 +1051,10 @@ def run_rectangular_scan(
         while current_x != target_x:
             if stop_event.is_set():
                 return False
+            if not ensure_map_ready():
+                return False
+            if current_x == target_x:
+                break
             if allow_pause and not restore_after_excursion(target_x, target_y):
                 return False
             direction = "east" if target_x > current_x else "west"
@@ -1008,6 +1070,13 @@ def run_rectangular_scan(
         while current_y != target_y:
             if stop_event.is_set():
                 return False
+            if not ensure_map_ready():
+                return False
+            # Recovery resets both axes, including an already completed x leg.
+            if current_x != target_x:
+                return move_to(target_x, target_y, allow_pause=allow_pause)
+            if current_y == target_y:
+                break
             if allow_pause and not restore_after_excursion(target_x, target_y):
                 return False
             direction = "north" if target_y > current_y else "south"
@@ -1072,10 +1141,11 @@ def run_rectangular_scan(
         recenter_on_exit = False
         raise
     finally:
-        if recenter_on_exit:
+        if recenter_on_exit and not stop_event.is_set():
             report("正在回到角色定位中心…")
             try:
-                client.recenter(size)
+                if ensure_map_ready():
+                    client.recenter(size)
                 if not detect_screen_changes:
                     threading.Event().wait(max(0.0, settle_seconds))
             except Exception as exc:
@@ -1384,7 +1454,7 @@ def run_recognition_scan(
                     live_filter.get("participant_count")
                 )
         result = model.predict(frame, **frame_predict_args)[0]
-        detections = detections_from_result(result)
+        detections = filter_terrain_false_positives(frame, detections_from_result(result))
         enrich_detections_with_badge_numbers(frame, detections)
         detections = filter_detections_by_participant_count(
             detections, frame_participant_count
@@ -1399,7 +1469,9 @@ def run_recognition_scan(
             enrich_detections_with_precise_coordinates(
                 unresolved, coordinate_resolver,
                 reference_image=frame,
-                detect_targets=lambda image: detections_from_result(model.predict(image, **recheck_args)[0]),
+                detect_targets=lambda image: filter_terrain_false_positives(
+                    image, detections_from_result(model.predict(image, **recheck_args)[0]),
+                ),
                 recover_map=lambda: restore_recognition_map(
                     adb_client, memory_watchdog, point, stop_event=event,
                     swipe_duration_ms=swipe_duration_ms, status=status,
@@ -1473,6 +1545,7 @@ def run_recognition_scan(
         capture_png=capture_png,
         detect_screen_changes=True,
         before_capture=memory_watchdog.before_capture,
+        ensure_map=getattr(memory_watchdog, "ensure_scan_map", None),
         recover_foreground=foreground_recovery,
         pause_checkpoint=pause_checkpoint,
         status=status,

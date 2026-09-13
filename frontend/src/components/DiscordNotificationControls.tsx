@@ -70,7 +70,7 @@ export function DiscordNotificationControls({ settings, onSaveSettings }: {
       }
       const config: DiscordNotificationConfig = { mode, webhook_url: webhookUrl.trim(), bot_token: botToken.trim(), channel_id: target }
       if (action === 'save') {
-        await onSaveSettings({ ...settings, discord_webhook: { ...config, enabled, channel_label: targetLabel } })
+        await onSaveSettings({ discord_webhook: { ...config, enabled, channel_label: targetLabel } })
         setMessage({ kind: 'success', text: enabled ? 'Discord 命中播報已啟用，命中時會附上目標圖片。' : 'Discord 命中播報已停用。' })
       } else {
         const result = await testDiscordNotification(config)

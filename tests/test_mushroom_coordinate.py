@@ -101,6 +101,14 @@ def active_route_detail_frame() -> np.ndarray:
 
 
 class MushroomCoordinateTests(unittest.TestCase):
+    def test_selection_card_near_either_edge_is_detected(self) -> None:
+        for left in (20, 330):
+            image = np.full((1000, 500, 3), 180, dtype=np.uint8)
+            cv2.rectangle(image, (left, 200), (left + 150, 255), (15, 15, 15), -1)
+            card = mushroom_selection_card_center(image)
+            self.assertIsNotNone(card)
+            self.assertTrue(left <= card[0] <= left + 150)
+
     def test_settled_map_waits_through_an_unknown_transition_frame(self) -> None:
         now = [0.0]
 
@@ -159,6 +167,29 @@ class MushroomCoordinateTests(unittest.TestCase):
         self.assertFalse(mushroom_route_active(detail_frame()))
         self.assertTrue(mushroom_route_active(active_route_detail_frame()))
 
+    def test_return_waits_through_transition_without_blind_back(self) -> None:
+        adb = FakeAdb()
+        resolver = MushroomCoordinateResolver(adb, FakeController(), stop_event=threading.Event(), capture_image=map_frame)
+        with (
+            patch('bloompilot.mushroom_coordinate.classify_pikmin_restart_image', return_value='unknown'),
+            patch('bloompilot.mushroom_coordinate.mushroom_detail_visible', return_value=False),
+            patch('bloompilot.mushroom_coordinate.mushroom_destination_menu_visible', return_value=False),
+            patch.object(resolver, '_wait_for', return_value=False),
+        ):
+            self.assertFalse(resolver._return_to_map())
+        self.assertEqual(adb.commands, [])
+
+    def test_single_transient_map_frame_is_not_accepted_as_restored(self) -> None:
+        adb = FakeAdb()
+        resolver = MushroomCoordinateResolver(adb, FakeController(), stop_event=threading.Event(), capture_image=map_frame)
+        with (
+            patch('bloompilot.mushroom_coordinate.classify_pikmin_restart_image', return_value='map'),
+            patch.object(resolver, '_settled_map', side_effect=[PreciseCoordinateError('transition'), map_frame()]) as settle,
+        ):
+            self.assertTrue(resolver._return_to_map())
+        self.assertEqual(settle.call_count, 2)
+        self.assertEqual(adb.commands, [])
+
     def test_resolver_captures_coordinate_without_movement_command(self) -> None:
         frames = iter(
             [
@@ -177,7 +208,7 @@ class MushroomCoordinateTests(unittest.TestCase):
             adb,  # type: ignore[arg-type]
             controller,  # type: ignore[arg-type]
             stop_event=threading.Event(),
-            capture_image=lambda: next(frames),
+            capture_image=lambda: next(frames, map_frame()),
         )
 
         with patch(
@@ -214,7 +245,7 @@ class MushroomCoordinateTests(unittest.TestCase):
             adb,  # type: ignore[arg-type]
             controller,  # type: ignore[arg-type]
             stop_event=threading.Event(),
-            capture_image=lambda: next(frames),
+            capture_image=lambda: next(frames, map_frame()),
         )
 
         with (
@@ -369,6 +400,24 @@ class ReframingTests(unittest.TestCase):
         self.assertEqual(names.count("endCoordinateCapture"), 2)
         self.assertFalse({"teleport", "navigate", "addBookmark"}.intersection(names))
 
+    def test_swipe_inertia_settles_before_reidentification_and_restores_settled_grid(self) -> None:
+        calls = 0
+
+        def settled():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.adb.dx = -50
+            return self.adb.frame()
+
+        with patch.object(self.resolver, "_settled_map", side_effect=settled):
+            result = self.resolver.resolve(self.detections[0], **self.options)
+        self.assertTrue(result["exact"])
+        self.assertEqual(self.adb.clicked, [0])
+        # The grid's final camera position is -50, not the moving reference's 0.
+        self.assertAlmostEqual(self.adb.dx, -50, delta=3)
+        self.assertFalse(any(cmd[:3] == ("shell", "input", "swipe") for cmd in self.adb.commands))
+
     def test_no_movement_is_limited_to_two_adjustments_and_keeps_failed_hit(self) -> None:
         self.adb.drag_gain = 0.0
         with tempfile.TemporaryDirectory() as directory:
@@ -381,6 +430,15 @@ class ReframingTests(unittest.TestCase):
         self.assertEqual(self.adb.clicked, [])
         self.assertEqual(sum(cmd[:3] == ("shell", "input", "swipe") for cmd in self.adb.commands), 2)
         self.assertNotIn("beginCoordinateCapture", [name for name, _ in self.controller.commands])
+
+    def test_clipped_targets_remain_identifiable_with_amplified_map_motion(self) -> None:
+        self.adb.drag_gain = 1.6
+        enrich_detections_with_precise_coordinates(self.detections, self.resolver, **self.options)
+        self.assertEqual(self.adb.clicked, [0, 1])
+        for detection in self.detections:
+            self.assertNotIn("coordinate_error", detection)
+            self.assertTrue(detection["precise_coordinate"]["exact"])
+        self.assertLessEqual(max(abs(self.adb.dx), abs(self.adb.dy)), 3)
 
     def test_timed_out_drag_may_have_moved_map_and_is_still_restored(self) -> None:
         self.adb.timeout_first_drag = True

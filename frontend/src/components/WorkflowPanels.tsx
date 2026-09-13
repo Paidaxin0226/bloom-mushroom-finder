@@ -12,6 +12,8 @@ import { DiscordNotificationControls } from './DiscordNotificationControls'
 
 export interface JobUi {
   active: JobRecord | null
+  latest?: JobRecord | null
+  cancelRecognitionPause: (jobId: string) => Promise<JobRecord>
   preview: string | null
   detections: DetectionLine[]
   memory: MemoryStatus | null
@@ -35,19 +37,11 @@ function recordValue(value: unknown): Record<string, unknown> | null {
 }
 
 function settingsWithConfigSection(
-  settings: Record<string, unknown>,
+  _settings: Record<string, unknown>,
   section: string,
   values: Record<string, unknown>,
 ): Record<string, unknown> {
-  const overrides = recordValue(settings.config_overrides) ?? {}
-  const currentSection = recordValue(overrides[section]) ?? {}
-  return {
-    ...settings,
-    config_overrides: {
-      ...overrides,
-      [section]: { ...currentSection, ...values },
-    },
-  }
+  return { config_overrides: { [section]: values } }
 }
 
 function detectionLocationLabel(line: DetectionLine, detection: Record<string, unknown>): string {
@@ -119,7 +113,7 @@ export function WorkLayout({ children, jobs, preview = false, previewSource, wid
     <div className="workflow-form">{children}</div>
     <div className="workflow-output">
       {preview && <PreviewStage source={source}/>}
-      <div className="output-card"><div className="output-card-title">工作狀態</div><JobProgress job={jobs.active}/>{jobs.memory && <div className={`memory-watchdog ${jobs.memory.pressure ? 'pressure' : ''} ${jobs.memory.restarting ? 'restarting' : ''}`}><div><span>手機 RAM</span><b>{(jobs.memory.available_mib / 1024).toFixed(2)} / {(jobs.memory.total_mib / 1024).toFixed(2)} GB 可用</b></div><div><span>Pikmin</span><b>{jobs.memory.game_pss_mib === null ? '讀取中' : `${Math.round(jobs.memory.game_pss_mib)} MB`}</b></div><div><span>監控狀態</span><b>{jobs.memory.restarting ? '正在重啟遊戲' : jobs.memory.pressure ? `壓力 ${jobs.memory.consecutive_pressure}/2` : `正常 · 已重啟 ${jobs.memory.restart_count} 次`}</b></div></div>}<JobConsole logs={jobs.logs}/></div>
+      <div className="output-card"><div className="output-card-title">工作狀態</div><JobProgress job={jobs.active ?? jobs.latest ?? null}/>{jobs.active?.pause_requested && <div className="notice">已要求暫停，完成目前操作後自動暫停。<button onClick={() => void jobs.cancelRecognitionPause(jobs.active!.id)}>取消暫停要求</button></div>}{jobs.memory && <div className={`memory-watchdog ${jobs.memory.pressure ? 'pressure' : ''} ${jobs.memory.restarting ? 'restarting' : ''}`}><div><span>手機 RAM</span><b>{(jobs.memory.available_mib / 1024).toFixed(2)} / {(jobs.memory.total_mib / 1024).toFixed(2)} GB 可用</b></div><div><span>Pikmin</span><b>{jobs.memory.game_pss_mib === null ? '讀取中' : `${Math.round(jobs.memory.game_pss_mib)} MB`}</b></div><div><span>監控狀態</span><b>{jobs.memory.restarting ? '正在重啟遊戲' : jobs.memory.pressure ? `壓力 ${jobs.memory.consecutive_pressure}/2` : `正常 · 已重啟 ${jobs.memory.restart_count} 次`}</b></div></div>}<JobConsole logs={jobs.logs}/></div>
       {(hitNotifications || hits.length > 0) && <div className="output-card detections-list">
         <div className="output-card-title hit-card-title"><span>即時命中</span>{hitNotifications && <i className={recordValue(hitNotifications.settings.discord_webhook)?.enabled === true ? 'enabled' : ''}>{recordValue(hitNotifications.settings.discord_webhook)?.enabled === true ? 'DISCORD ON' : 'SCREEN ONLY'}</i>}</div>
         {hitNotifications && <DiscordNotificationControls {...hitNotifications}/>}
@@ -391,7 +385,6 @@ export function useRecognitionFilterDefaults({ settings, options, model, onSaveS
     setSavingFilterDefaults(true)
     try {
       await onSaveSettings({
-        ...settings,
         recognition_filter_defaults: {
           all_targets: options.length === 0 || options.every((name) => selectedTargetNames.includes(name)),
           target_names: options.length > 0 ? selectedTargetNames : [],

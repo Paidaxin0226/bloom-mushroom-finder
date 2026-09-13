@@ -1,0 +1,43 @@
+param([Parameter(Mandatory=$true)][string]$ImagePath)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrResult, Windows.Foundation, ContentType=WindowsRuntime]
+function Await-WinRT($Operation, [Type]$ResultType) {
+    $method = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+    } | Select-Object -First 1
+    $task = $method.MakeGenericMethod($ResultType).Invoke($null, @($Operation))
+    $task.GetAwaiter().GetResult()
+}
+$languages = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+$language = $languages | Where-Object { $_.LanguageTag -like 'zh-Hant*' } | Select-Object -First 1
+if (-not $language) { $language = $languages | Select-Object -First 1 }
+if (-not $language) { Write-Output '[]'; exit 0 }
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($language)
+$file = Await-WinRT ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile])
+$stream = Await-WinRT ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+try {
+    $decoder = Await-WinRT ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $bitmap = Await-WinRT ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    try {
+        $result = Await-WinRT ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+        $lines = @($result.Lines | ForEach-Object {
+            $words = @($_.Words)
+            if ($words.Count -gt 0) {
+                $left = ($words | ForEach-Object { $_.BoundingRect.X } | Measure-Object -Minimum).Minimum
+                $top = ($words | ForEach-Object { $_.BoundingRect.Y } | Measure-Object -Minimum).Minimum
+                $right = ($words | ForEach-Object { $_.BoundingRect.X + $_.BoundingRect.Width } | Measure-Object -Maximum).Maximum
+                $bottom = ($words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height } | Measure-Object -Maximum).Maximum
+                @{ text=$_.Text; x=$left; y=$top; width=($right-$left); height=($bottom-$top); screen_height=$bitmap.PixelHeight }
+            }
+        })
+        ConvertTo-Json -InputObject $lines -Compress -Depth 4
+    } finally { $bitmap.Dispose() }
+} finally { $stream.Dispose() }

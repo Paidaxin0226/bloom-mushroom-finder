@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDevice } from './hooks/useDevice'
@@ -28,6 +28,8 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settings, setSettings] = useState<Record<string, unknown>>({})
   const [effective, setEffective] = useState<Record<string, unknown>>({})
+  const settingsVersion = useRef(0)
+  const modelsVersion = useRef(0)
   const [toast, setToast] = useState<string | null>(null)
 
   const showError = useCallback((error: unknown) => {
@@ -36,24 +38,35 @@ export default function App() {
   }, [])
 
   const refreshModels = useCallback(async () => {
-    try { setModels(await api.getModels()) } catch (error) { showError(error) }
+    const version = ++modelsVersion.current
+    try {
+      const result = await api.getModels()
+      if (version === modelsVersion.current) setModels(result)
+    } catch (error) { if (version === modelsVersion.current) showError(error) }
   }, [showError])
   const refreshSettings = useCallback(async () => {
+    const version = ++settingsVersion.current
     try {
       const result = await api.getSettings()
+      if (version !== settingsVersion.current) return
       setSettings(result.settings)
       setEffective(result.effective_config)
-    } catch (error) { showError(error) }
+    } catch (error) { if (version === settingsVersion.current) showError(error) }
   }, [showError])
   const saveSettings = useCallback(async (next: Record<string, unknown>) => {
+    const version = ++settingsVersion.current
     try {
       const result = await api.saveSettings(next)
-      setSettings(result.settings)
-      setEffective(result.effective_config)
+      if (version === settingsVersion.current) {
+        setSettings(result.settings)
+        setEffective(result.effective_config)
+      } else {
+        await refreshSettings()
+      }
       setToast('設定已保存')
       window.setTimeout(() => setToast(null), 2200)
     } catch (error) { showError(error); throw error }
-  }, [showError])
+  }, [showError, refreshSettings])
   const setDefaultRecognitionModel = useCallback(async (modelPath: string) => {
     try {
       await api.setDefaultModel(modelPath)
@@ -66,6 +79,13 @@ export default function App() {
     void refreshModels()
     void refreshSettings()
   }, [refreshModels, refreshSettings])
+
+  useEffect(() => websocket.subscribe((event) => {
+    if (event.type === 'settings_update' || (event.type === 'system' && event.state === 'ready')) {
+      void refreshSettings()
+      void refreshModels()
+    }
+  }), [websocket.subscribe, refreshSettings, refreshModels])
 
   useEffect(() => {
     if (!device.status.current) return
@@ -80,6 +100,8 @@ export default function App() {
 
   const jobUi = useMemo(() => ({
     active: jobs.active,
+    latest: jobs.history[0] ?? null,
+    cancelRecognitionPause: async (jobId: string) => { try { return await jobs.cancelRecognitionPause(jobId) } catch (error) { showError(error); throw error } },
     preview: jobs.preview,
     detections: jobs.detections,
     memory: jobs.memory,
@@ -115,9 +137,9 @@ export default function App() {
     },
     cancelTrainingStop: async () => { try { await jobs.cancelTrainingStop() } catch (error) { showError(error) } },
     pauseTraining: async () => { try { return await jobs.pauseTraining() } catch (error) { showError(error); throw error } },
-  }), [jobs.active, jobs.preview, jobs.detections, jobs.memory, jobs.logs, jobs.start, jobs.stop, jobs.pauseRecognition, jobs.skipGeoWaypoint, jobs.deleteGeoWaypoint, jobs.teleportWhilePaused, jobs.resumeRecognition, jobs.cancelTrainingStop, jobs.pauseTraining, showError])
+  }), [jobs.active, jobs.history, jobs.cancelRecognitionPause, jobs.preview, jobs.detections, jobs.memory, jobs.logs, jobs.start, jobs.stop, jobs.pauseRecognition, jobs.skipGeoWaypoint, jobs.deleteGeoWaypoint, jobs.teleportWhilePaused, jobs.resumeRecognition, jobs.cancelTrainingStop, jobs.pauseTraining, showError])
 
-  const deviceCard = <DeviceStatus devices={device.devices} status={device.status} busy={device.busy} error={device.error} onScan={() => void device.scan()} onConnect={device.connect} onDisconnect={device.disconnect}/>
+  const deviceCard = <DeviceStatus devices={device.devices} status={device.status} busy={device.busy} error={device.error} onScan={() => void device.scan()} onConnect={device.connect} onDisconnect={device.disconnect} onWake={device.wake}/>
   const mapPage = page === 'device'
 
   const activeRecognitionMode: RecognitionMode | null = jobs.active?.kind === 'geo_sequence_recognition'

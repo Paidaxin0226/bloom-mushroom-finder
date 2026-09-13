@@ -37,6 +37,9 @@ package = true
 [tool.setuptools.packages.find]
 include = ["bloompilot*"]
 
+[tool.setuptools.package-data]
+bloompilot = ["*.ps1", "templates/*.png"]
+
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cu130", marker = "sys_platform == 'win32'" },

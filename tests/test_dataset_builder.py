@@ -164,6 +164,38 @@ class DatasetBuilderTests(unittest.TestCase):
         )
         self.assertTrue(yolo_label(box, 300, 500).startswith("1 "))
 
+    def test_zero_target_samples_keep_background_and_have_empty_labels(self) -> None:
+        config = load_config(self.root / "config.yaml")
+        config["generation"]["target_count_probabilities"] = {0: 1.0, 1: 0.0}
+        dataset = generate_dataset(config)
+        summary = validate_dataset(dataset)
+        metadata = json.loads((dataset / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["negative_image_count"], 4)
+        self.assertEqual(summary["splits"]["train"]["image_count"], 2)
+        self.assertEqual(summary["splits"]["val"]["image_count"], 2)
+        for label in (dataset / "labels").rglob("*.txt"):
+            self.assertEqual(label.read_bytes(), b"")
+            city, stem = label.stem.split("__", 1)
+            source = self.root / "data/source/backgrounds" / city / (stem.split("__aug_")[0] + ".png")
+            generated = dataset / "images" / label.parent.name / (label.stem + ".png")
+            with Image.open(source) as before, Image.open(generated) as after:
+                self.assertEqual(before.tobytes(), after.tobytes())
+
+    def test_zero_target_range_is_supported_and_negative_counts_are_rejected(self) -> None:
+        config = load_config(self.root / "config.yaml")
+        config["generation"].pop("target_count_probabilities")
+        config["generation"]["targets_per_image_min"] = 0
+        config["generation"]["targets_per_image_max"] = 0
+        dataset = generate_dataset(config)
+        self.assertTrue(all(not p.read_text() for p in (dataset / "labels").rglob("*.txt")))
+        config["generation"]["targets_per_image_min"] = -1
+        with self.assertRaises(ValueError):
+            validate_generation_config(config)
+        config["generation"]["targets_per_image_min"] = 0
+        config["generation"]["target_count_probabilities"] = {-1: 1.0}
+        with self.assertRaises(ValueError):
+            validate_generation_config(config)
+
     def test_parallel_generation_matches_single_worker_and_reports_per_image(self) -> None:
         config = load_config(self.root / "config.yaml")
         config["generation"]["progress_interval"] = 999

@@ -30,6 +30,10 @@ class DeviceControlError(RuntimeError):
     """A USB bridge or device command error that is safe to show in the GUI."""
 
 
+class UsbConnectionError(DeviceControlError):
+    """The socket closed or failed, including while Android starts its service."""
+
+
 @dataclass(frozen=True)
 class DeviceResponse:
     ok: bool
@@ -87,7 +91,7 @@ class JsonLineTransport:
             raise DeviceControlError("USB 控制指令超過大小限制。")
         with _locked_until(self._lock, deadline):
             if self._closed:
-                raise DeviceControlError("USB 控制連線已關閉。")
+                raise UsbConnectionError("USB 控制連線已關閉。")
             original_timeout = self._connection.gettimeout()
             try:
                 if deadline is not None:
@@ -101,7 +105,7 @@ class JsonLineTransport:
             except (OSError, TimeoutError) as exc:
                 # A late response cannot safely be reused by another request.
                 self.close()
-                raise DeviceControlError(f"USB 控制連線中斷：{exc}") from exc
+                raise UsbConnectionError(f"USB 控制連線中斷：{exc}") from exc
             except DeviceControlError:
                 self.close()
                 raise
@@ -132,7 +136,7 @@ class JsonLineTransport:
                 raise DeviceControlError("Android 控制回應超過大小限制。")
             chunk = self._connection.recv(min(4096, self._max_bytes - len(self._buffer)))
             if not chunk:
-                raise DeviceControlError("Android 已關閉 USB 控制連線。")
+                raise UsbConnectionError("Android 已關閉 USB 控制連線。")
             self._buffer.extend(chunk)
 
     def close(self) -> None:
@@ -292,20 +296,35 @@ class UsbDeviceController:
             try:
                 forward.start_service(timeout=min(12.0, _remaining_seconds(deadline)))
                 port = forward.open(timeout=min(12.0, _remaining_seconds(deadline)))
-                connection = self._socket_factory(
-                    ("127.0.0.1", port), timeout=min(8.0, _remaining_seconds(deadline))
-                )
-                connection.settimeout(self.timeout)
-                transport = JsonLineTransport(connection)
-                raw = transport.request(
-                    {
-                        "v": PROTOCOL_VERSION,
-                        "type": "pair",
-                        "id": _request_id(),
-                        "client": "BloomPilot Control Center",
-                    },
-                    deadline=deadline,
-                )
+                # ADB accepts the forwarded TCP connection before Android has
+                # bound its local socket. Wait for readiness within this one
+                # deadline instead of spending an entire recovery attempt on
+                # an immediate EOF. Protocol errors/rejections are not retried.
+                while True:
+                    try:
+                        connection = self._socket_factory(
+                            ("127.0.0.1", port), timeout=min(8.0, _remaining_seconds(deadline))
+                        )
+                        transport = JsonLineTransport(connection)
+                        connection.settimeout(self.timeout)
+                        raw = transport.request(
+                            {
+                                "v": PROTOCOL_VERSION,
+                                "type": "pair",
+                                "id": _request_id(),
+                                "client": "BloomPilot Control Center",
+                            },
+                            deadline=deadline,
+                        )
+                        break
+                    except (UsbConnectionError, OSError):
+                        if transport is not None:
+                            transport.close()
+                            transport = None
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise
+                        time.sleep(min(0.25, remaining))
                 response = self._response(raw)
                 if not response.ok:
                     raise DeviceControlError(response.message or "ADB USB 連線失敗。")
@@ -340,7 +359,7 @@ class UsbDeviceController:
         with _locked_until(self._lifecycle_lock, deadline):
             transport = self._transport
             if transport is None:
-                raise DeviceControlError("尚未連接 Android USB 控制。")
+                raise UsbConnectionError("尚未連接 Android USB 控制。")
             command_name = str(command or "").strip()
             if not command_name or len(command_name) > 80:
                 raise DeviceControlError("裝置控制指令名稱無效。")
@@ -451,12 +470,17 @@ def restart_locwarp(
     *,
     stop_event: threading.Event | None = None,
     status: Callable[[str], None] | None = None,
+    reason: str = "memory",
 ) -> DeviceResponse:
     """Restart LocWarp itself, then rebuild its USB service connection."""
     stop = stop_event or threading.Event()
     if stop.is_set():
         raise DeviceControlError("LocWarp 重新啟動已取消。")
-    message = "手機記憶體偏低，正在重新啟動 LocWarp 並恢復 USB 控制…"
+    message = (
+        "USB 服務無法恢復，正在重新啟動 LocWarp 並重建連線…"
+        if reason == "usb" else
+        "手機記憶體偏低，正在重新啟動 LocWarp 並恢復 USB 控制…"
+    )
     LOGGER.info(message)
     if status is not None:
         status(message)

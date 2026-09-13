@@ -132,6 +132,8 @@ class GeoWaypointSkipTests(unittest.TestCase):
 
     def test_skip_finishes_current_target_without_opening_remaining_targets(self):
         resolver = Mock()
+        resolver.recovery_count = 0
+        resolver.recovery_seconds = 0.0
         resolver.stop_event = threading.Event()
 
         def create_resolver(context):

@@ -182,6 +182,7 @@ class ArtifactManager:
         status: str,
         completed_epochs: int = 0,
         total_epochs: int = 0,
+        class_names: Iterable[str] | None = None,
     ) -> None:
         run_dir = self._safe_run(run_dir)
         manifest_path = run_dir / TRAINING_MANIFEST
@@ -199,6 +200,13 @@ class ArtifactManager:
         }
         if isinstance(previous.get("monthly_workflow"), dict):
             payload["monthly_workflow"] = previous["monthly_workflow"]
+        names = list(class_names) if class_names is not None else (
+            _load_json(dataset_dir / "metadata.json").get("class_names") if dataset_dir else None
+        )
+        if not names:
+            names = previous.get("class_names")
+        if isinstance(names, list) and names and all(isinstance(name, str) for name in names):
+            payload["class_names"] = names
         _atomic_write(manifest_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         if status == "completed":
             write_pointer(self.training_root / LATEST_RUN, run_dir, self.training_root)
@@ -216,6 +224,11 @@ class ArtifactManager:
             checkpoint = self.project_root / checkpoint
         checkpoint = checkpoint.resolve()
         if not checkpoint.is_file() or not _is_within(checkpoint, self.training_root):
+            return
+        # The final checkpoint progress can briefly outlive train()'s completed
+        # manifest. Never turn an early-stopped run back into an incomplete run.
+        existing = _load_json(checkpoint.parent.parent / TRAINING_MANIFEST)
+        if existing.get("status") == "completed" and state != "completed":
             return
         dataset_value = status.get("dataset")
         if dataset_value:
@@ -495,9 +508,24 @@ class ArtifactManager:
         if not self.dataset_root.is_dir():
             return []
         files: list[Path] = []
-        for path in self.dataset_root.rglob("*"):
-            if path.is_file() and (path.suffix.casefold() == ".npy" or path.name.endswith(".cache")):
-                files.append(path.resolve())
+        root = self.dataset_root.resolve()
+        for directory, subdirs, names in os.walk(root, followlinks=False):
+            base = Path(directory).resolve()
+            if not base.is_relative_to(root):
+                subdirs.clear()
+                continue
+            subdirs[:] = [name for name in subdirs
+                          if not Path(directory, name).is_symlink()
+                          and not Path(directory, name).is_junction()]
+            parts = base.relative_to(root).parts
+            originals = {Path(name).stem for name in names if Path(name).suffix.casefold() in IMAGE_SUFFIXES}
+            for name in names:
+                path = base / name
+                # An NPY array is disposable only while its source image exists.
+                image_cache = "images" in parts and path.suffix.casefold() == ".npy" and path.stem in originals
+                label_cache = "labels" in parts and path.suffix.casefold() == ".cache"
+                if (image_cache or label_cache) and not path.is_symlink() and path.is_file():
+                    files.append(path)
         return files
 
     def model_prune_candidates(self) -> list[Path]:
@@ -542,6 +570,16 @@ class ArtifactManager:
         }
 
     def clear_rebuildable_cache(self, *, apply: bool = False) -> dict[str, Any]:
+        if apply:
+            control = _load_json(self.control_root / "status.json")
+            running = control.get("state") in {"running", "starting", "stopping"}
+            if self.training_root.is_dir():
+                running = running or any(
+                    _load_json(run / TRAINING_MANIFEST).get("status") == "running"
+                    for run in self.training_root.iterdir() if run.is_dir()
+                )
+            if running:
+                raise RuntimeError("訓練仍在執行，請先停止訓練再清理資料集快取。")
         files = self.cache_files()
         total = sum(path.stat().st_size for path in files)
         if apply:

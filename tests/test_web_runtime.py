@@ -280,6 +280,7 @@ class DatasetRuntimeTests(unittest.TestCase):
         )
         with (
             patch.object(runtime.jobs, "pause_recognition") as pause,
+            patch.object(runtime.jobs, "stop_event", return_value=threading.Event()),
             patch.object(runtime.jobs, "update", return_value=paused) as update,
             patch.object(runtime.device, "status", return_value={"current": {"lat": 25.0, "lng": 121.0}}),
             patch.object(type(runtime.device), "serial", new_callable=PropertyMock, return_value="phone-1"),
@@ -391,7 +392,7 @@ class DatasetRuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (weights.parent / ".artifact.json").write_text(
-                json.dumps({"dataset": "data/generated/dataset_a"}),
+                json.dumps({"dataset": "data/generated/dataset_a", "created_at": "2026-09-12T00:00:00+08:00"}),
                 encoding="utf-8",
             )
             pretrained = root / "models/pretrained/base.pt"
@@ -400,7 +401,7 @@ class DatasetRuntimeTests(unittest.TestCase):
             runtime = AppRuntime()
             with patch.object(runtime, "config", return_value={"_project_root": str(root)}):
                 self.assertEqual([model["path"] for model in runtime.models()], [str(best.resolve())])
-                self.assertEqual(runtime.models()[0]["name"], "run_a / best.pt")
+                self.assertEqual(runtime.models()[0]["name"], "2026-09｜不含活動菇")
                 self.assertEqual(runtime.models()[0]["class_names"], ["Large_Blue", "Large_Red"])
                 self.assertEqual(runtime.recognition_model({"model_path": str(best)}), best.resolve())
                 with self.assertRaisesRegex(ValueError, "專案"):
@@ -752,6 +753,27 @@ class RouteLibraryTests(unittest.TestCase):
                 RouteLibrary(root).route_path("_monthly/background.json"),
                 private / "background.json",
             )
+
+    def test_project_runtime_lists_imported_routes_with_inhabited_route(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            root = Path(temporary) / "routes"
+            library = RouteLibrary(root)
+            custom = library.import_document("custom.json", self.route_document("周邊一圈"))
+            for relative in (
+                "pikmin_inhabited/less_known_inhabited.json",
+                "pikmin_global/legacy.json",
+                "_monthly/background.json",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(self.route_document(relative)), encoding="utf-8")
+            runtime = AppRuntime.__new__(AppRuntime)
+            runtime.route_library = library
+            with patch("bloompilot.web.runtime.ROUTES_DIR", root):
+                self.assertEqual(
+                    {route["path"] for route in runtime.routes()},
+                    {custom["path"], "pikmin_inhabited/less_known_inhabited.json"},
+                )
 
     def test_import_is_validated_stored_and_overwritten_by_source_name(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:

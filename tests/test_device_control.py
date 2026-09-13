@@ -210,6 +210,86 @@ class JsonLineTransportTests(unittest.TestCase):
         transport.close()
         thread.join(timeout=2)
 
+    def test_connect_waits_for_android_socket_without_restarting_service_or_forward(self) -> None:
+        first, closed_peer = socket.socketpair()
+        closed_peer.close()
+        ready, peer = socket.socketpair()
+        peer.settimeout(2)
+        forward = Mock()
+        forward.open.return_value = 12345
+        factory = Mock(side_effect=[first, ready])
+        controller = UsbDeviceController(Path("adb"), "serial", socket_factory=factory)
+
+        def respond() -> None:
+            with peer:
+                request = json.loads(peer.recv(4096).split(b"\n", 1)[0])
+                peer.sendall(json.dumps({
+                    "v": 1, "type": "result", "id": request["id"], "ok": True,
+                }).encode() + b"\n")
+
+        worker = threading.Thread(target=respond)
+        worker.start()
+        try:
+            with patch("bloompilot.device_control.AdbForward", return_value=forward):
+                self.assertTrue(controller.connect(timeout=1).ok)
+            self.assertTrue(controller.connected)
+            self.assertEqual(controller.connection_generation, 1)
+            self.assertEqual(factory.call_count, 2)
+            self.assertEqual(first.fileno(), -1)
+            forward.start_service.assert_called_once()
+            forward.open.assert_called_once()
+        finally:
+            controller.close()
+            worker.join(timeout=2)
+
+    def test_connect_repeated_eof_keeps_one_deadline_and_cleans_every_socket(self) -> None:
+        sockets: list[socket.socket] = []
+
+        def disconnected(*_args, **_kwargs):
+            client, peer = socket.socketpair()
+            peer.close()
+            sockets.append(client)
+            return client
+
+        forward = Mock()
+        forward.open.return_value = 12345
+        controller = UsbDeviceController(Path("adb"), "serial", socket_factory=disconnected)
+        started = time.monotonic()
+        with patch("bloompilot.device_control.AdbForward", return_value=forward):
+            with self.assertRaises(DeviceControlError):
+                controller.connect(timeout=0.05)
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertFalse(controller.connected)
+        self.assertTrue(sockets)
+        self.assertTrue(all(connection.fileno() == -1 for connection in sockets))
+        forward.close.assert_called_once()
+
+    def test_connect_does_not_retry_rejected_handshake(self) -> None:
+        client, peer = socket.socketpair()
+        peer.settimeout(2)
+        factory = Mock(return_value=client)
+        controller = UsbDeviceController(Path("adb"), "serial", socket_factory=factory)
+
+        def reject() -> None:
+            with peer:
+                request = json.loads(peer.recv(4096).split(b"\n", 1)[0])
+                peer.sendall(json.dumps({
+                    "v": 1, "type": "result", "id": request["id"],
+                    "ok": False, "message": "rejected",
+                }).encode() + b"\n")
+
+        worker = threading.Thread(target=reject)
+        worker.start()
+        try:
+            with patch("bloompilot.device_control.AdbForward"):
+                with self.assertRaisesRegex(DeviceControlError, "rejected"):
+                    controller.connect(timeout=1)
+            factory.assert_called_once()
+            self.assertFalse(controller.connected)
+        finally:
+            controller.close()
+            worker.join(timeout=2)
+
     def test_bounded_command_times_out_at_either_lock_without_sending_later(self) -> None:
         for lock_name in ("controller", "transport"):
             with self.subTest(lock=lock_name):

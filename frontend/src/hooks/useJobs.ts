@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from '../services/api'
 import type { JobRecord, ServerEvent } from '../types'
+import { isActiveJob, mergeJob } from '../utils/jobState'
 
 export interface DetectionLine {
   id: number
@@ -24,43 +25,65 @@ export interface MemoryStatus {
 }
 
 export function useJobs(subscribe: (handler: (event: ServerEvent) => void) => () => void) {
-  const [active, setActive] = useState<JobRecord | null>(null)
   const [history, setHistory] = useState<JobRecord[]>([])
   const [preview, setPreview] = useState<string | null>(null)
   const [detections, setDetections] = useState<DetectionLine[]>([])
   const [memory, setMemory] = useState<MemoryStatus | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const detectionId = useRef(0)
+  const eventVersion = useRef(0)
+  const refreshVersion = useRef(0)
+  const displayJobId = useRef<string | null>(null)
+  const active = history[0] && isActiveJob(history[0]) ? history[0] : null
+
+  const applyJob = useCallback((job: JobRecord) => {
+    setHistory((items) => mergeJob(items, job))
+    if (isActiveJob(job) && displayJobId.current !== job.id) {
+      displayJobId.current = job.id
+      setPreview(null)
+      setDetections([])
+      setMemory(null)
+      setLogs([])
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
+    const version = ++refreshVersion.current
+    const events = eventVersion.current
     const result = await api.listJobs()
-    setActive(result.active)
-    setHistory(result.jobs)
+    if (version !== refreshVersion.current) return
+    setHistory((items) => {
+      if (events !== eventVersion.current) return result.jobs.reduce(mergeJob, items)
+      return result.jobs.reduce(mergeJob, []).map((job) => {
+        const current = items.find((item) => item.id === job.id)
+        return current ? mergeJob([current], job)[0] : job
+      })
+    })
   }, [])
 
   const start = useCallback(async (kind: string, payload: Record<string, unknown>) => {
-    setPreview(null)
-    setDetections([])
-    setMemory(null)
-    setLogs([])
     const result = await api.startJob(kind, payload)
-    setActive(result.job)
-    setHistory((items) => [result.job, ...items.filter((item) => item.id !== result.job.id)])
+    applyJob(result.job)
     return result.job
-  }, [])
+  }, [applyJob])
 
   const stop = useCallback(async () => {
     if (!active) return
     const result = await api.stopJob(active.id)
-    setActive(result.job)
-  }, [active])
+    applyJob(result.job)
+  }, [active, applyJob])
+
+  const cancelRecognitionPause = useCallback(async (jobId: string) => {
+    const result = await api.cancelRecognitionPause(jobId)
+    applyJob(result.job)
+    return result.job
+  }, [applyJob])
 
   const pauseRecognition = useCallback(async (jobId: string) => {
     const result = await api.pauseRecognition(jobId)
-    setActive(result.job)
-    setHistory((items) => [result.job, ...items.filter((item) => item.id !== result.job.id)])
+    applyJob(result.job)
     return result.job
-  }, [])
+  }, [applyJob])
 
   const skipGeoWaypoint = useCallback(async (jobId: string, waypointId: string) => {
     await api.skipGeoWaypoint(jobId, waypointId)
@@ -81,33 +104,31 @@ export function useJobs(subscribe: (handler: (event: ServerEvent) => void) => ()
     payload: { lat: number; lng: number; label?: string },
   ) => {
     const result = await api.teleportWhilePaused(jobId, payload)
-    setActive(result.job)
-    setHistory((items) => [result.job, ...items.filter((item) => item.id !== result.job.id)])
+    applyJob(result.job)
     return result.job
-  }, [])
+  }, [applyJob])
 
   const resumeRecognition = useCallback(async (
     jobId: string,
     payload: { target_names?: string[]; participant_count?: number | null },
   ) => {
     const result = await api.resumeRecognition(jobId, payload)
-    setActive(result.job)
-    setHistory((items) => [result.job, ...items.filter((item) => item.id !== result.job.id)])
+    applyJob(result.job)
     return result.job
-  }, [])
+  }, [applyJob])
 
   const cancelTrainingStop = useCallback(async () => {
     if (!active || active.kind !== 'training' || active.state !== 'stopping') return
     const result = await api.cancelTrainingStop(active.id)
-    setActive(result.job)
-  }, [active])
+    applyJob(result.job)
+  }, [active, applyJob])
 
   useEffect(() => subscribe((event) => {
+    if (event.type === 'system' && event.state === 'ready') void refresh().catch(() => undefined)
     if (event.type === 'job_update' && event.job) {
       const job = event.job
-      setHistory((items) => [job, ...items.filter((item) => item.id !== job.id)])
-      if (['queued', 'running', 'stopping'].includes(job.state)) setActive(job)
-      else setActive((current) => current?.id === job.id ? null : current)
+      eventVersion.current += 1
+      applyJob(job)
       if (job.message) setLogs((items) => items.at(-1) === job.message ? items : [...items.slice(-199), job.message])
     }
     if (event.type === 'preview' && event.data_url) setPreview(event.data_url)
@@ -137,9 +158,9 @@ export function useJobs(subscribe: (handler: (event: ServerEvent) => void) => ()
         return kept.reverse()
       })
     }
-  }), [subscribe])
+  }), [subscribe, applyJob, refresh])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh().catch(() => undefined) }, [refresh])
 
   return {
     active,
@@ -152,6 +173,7 @@ export function useJobs(subscribe: (handler: (event: ServerEvent) => void) => ()
     start,
     stop,
     pauseRecognition,
+    cancelRecognitionPause,
     skipGeoWaypoint,
     deleteGeoWaypoint,
     teleportWhilePaused,

@@ -1,4 +1,4 @@
-import type { AdbDevice, DatasetInfo, DeviceStatus, JobRecord, ModelInfo, MonthlyWorkflowStatus, ProjectRouteInfo } from '../types'
+import type { AdbDevice, DatasetInfo, DeviceStatus, PhoneState, JobRecord, ModelInfo, MonthlyWorkflowStatus, ProjectRouteInfo } from '../types'
 
 export function resolveApiPort(): string {
   try {
@@ -21,10 +21,13 @@ async function fetchWithRetry(url: string, options: RequestInit, attempts: numbe
   let lastError: unknown
   for (let index = 0; index < attempts; index += 1) {
     try {
-      return await fetch(url, options)
+      return await fetch(url, { ...options, signal: AbortSignal.timeout(options.method === 'GET' ? 15000 : 120000) })
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new Error('等待後端回應逾時，請確認連線後重試。')
+      }
       lastError = error
-      await new Promise((resolve) => setTimeout(resolve, Math.min(400 + index * 250, 1800)))
+      if (index + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, Math.min(400 + index * 250, 1800)))
     }
   }
   throw lastError ?? new Error('BloomPilot API unavailable')
@@ -44,6 +47,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const health = () => request<{ ok: boolean; version: string }>('GET', '/api/health')
 export const listDevices = () => request<AdbDevice[]>('GET', '/api/device/list')
+export const getPhoneState = (serial: string) => request<PhoneState>('GET', `/api/device/phone-state?serial=${encodeURIComponent(serial)}`)
+export const wakePhone = (serial: string) => request<PhoneState>('POST', '/api/device/wake', { serial })
 export const connectDevice = (serial: string) =>
   request<DeviceStatus>('POST', '/api/device/connect', { serial })
 export const disconnectDevice = () => request<DeviceStatus>('DELETE', '/api/device/connect')
@@ -133,15 +138,17 @@ export const configureMonthlyWorkflow = (cycle: string) =>
   request<MonthlyWorkflowStatus>('PUT', '/api/monthly-activity/config', { cycle })
 export const uploadMonthlyActivityTarget = (cycle: string, filename: string, data: string) =>
   request<MonthlyWorkflowStatus>('POST', '/api/monthly-activity/target', { cycle, filename, data })
-export const monthlyBackgroundUrl = (cycle: string, path: string, version = 0) =>
-  `${API}/api/monthly-activity/background?cycle=${encodeURIComponent(cycle)}&path=${encodeURIComponent(path)}&v=${version}`
+export const monthlyBackgroundUrl = (cycle: string, path: string, version = 0, thumbnail = false) =>
+  `${API}/api/monthly-activity/background?cycle=${encodeURIComponent(cycle)}&path=${encodeURIComponent(path)}&v=${version}&thumbnail=${thumbnail}`
+export const deleteMonthlyBackgrounds = (cycle: string, paths: string[]) =>
+  request<MonthlyWorkflowStatus>('POST', '/api/monthly-activity/delete-backgrounds', { cycle, paths })
 export const deleteMonthlyBackground = (cycle: string, path: string) =>
   request<MonthlyWorkflowStatus>('DELETE', `/api/monthly-activity/background?cycle=${encodeURIComponent(cycle)}&path=${encodeURIComponent(path)}`)
 export const approveMonthlyBackgrounds = (cycle: string) =>
   request<MonthlyWorkflowStatus>('POST', '/api/monthly-activity/approve-backgrounds', { cycle })
 export const getSettings = () => request<{ settings: Record<string, unknown>; effective_config: Record<string, unknown> }>('GET', '/api/settings')
 export const saveSettings = (settings: Record<string, unknown>) =>
-  request<{ settings: Record<string, unknown>; effective_config: Record<string, unknown> }>('PUT', '/api/settings', settings)
+  request<{ settings: Record<string, unknown>; effective_config: Record<string, unknown> }>('PATCH', '/api/settings', settings)
 export const testDiscordWebhook = (webhookUrl: string) =>
   request<{ ok: boolean; message: string }>('POST', '/api/notifications/discord/test', { webhook_url: webhookUrl })
 
@@ -166,3 +173,5 @@ export const getDiscordBotChannels = (botToken: string) =>
 
 export const testDiscordNotification = (config: DiscordNotificationConfig) =>
   request<{ ok: boolean; message: string; channel_id?: string }>('POST', '/api/notifications/discord/test', config)
+
+export const cancelRecognitionPause = (jobId: string) => request<{ job: JobRecord }>('POST', `/api/jobs/${jobId}/cancel-pause`)

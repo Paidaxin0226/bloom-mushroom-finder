@@ -115,6 +115,7 @@ class PhoneAutomationTests(unittest.TestCase):
         client = FakeAdbClient()
         watchdog = Mock()
         watchdog.prepare_for_scan.return_value = True
+        watchdog.ensure_scan_map.return_value = False
         event = threading.Event()
         with patch("bloompilot.phone_automation.SCREEN_STABLE_SECONDS", 0):
             self.assertTrue(restore_recognition_map(
@@ -127,6 +128,20 @@ class PhoneAutomationTests(unittest.TestCase):
             client, watchdog, ScanPoint(0, "center", 0), stop_event=event, swipe_duration_ms=650,
         ))
         watchdog.prepare_for_scan.assert_called_once()
+
+    def test_coordinate_recovery_restarts_replay_when_a_page_resets_the_map(self) -> None:
+        client = FakeAdbClient()
+        watchdog = Mock()
+        watchdog.prepare_for_scan.return_value = True
+        watchdog.ensure_scan_map.side_effect = [False, True, False, False, False, False]
+        with patch("bloompilot.phone_automation.SCREEN_STABLE_SECONDS", 0):
+            result = restore_recognition_map(
+                client, watchdog, ScanPoint(5, "grid", 2, -2, 1),
+                stop_event=threading.Event(), swipe_duration_ms=650,
+            )
+        self.assertTrue(result.grid_replayed)
+        self.assertEqual([action[1] for action in client.actions if isinstance(action, tuple) and action[0] == "swipe"],
+                         ["west", "west", "west", "north"])
 
     @staticmethod
     def png_frame(value: int) -> bytes:

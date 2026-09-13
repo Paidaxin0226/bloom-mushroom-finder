@@ -20,7 +20,7 @@ export function ModelPicker({ models, value, onChange, onRefresh, onSetDefault }
     try { await onSetDefault(value) } catch { /* App already reports the API error */ }
     finally { setSavingDefault(false) }
   }
-  return <div className="picker-row model-picker-row"><select className="select-field" value={value} onChange={(event) => onChange(event.target.value)}><option value="">{models.length ? '選擇專案訓練模型' : '尚無專案訓練模型'}</option>{models.map((model) => <option key={model.path} value={model.path}>{model.default ? '★ ' : ''}{model.name}</option>)}</select><button className="icon-btn" type="button" title="重新掃描專案模型" onClick={() => void onRefresh()}><Icon name="refresh" /></button><button className="model-default-btn" type="button" disabled={!value || selectedIsDefault || savingDefault} onClick={() => void saveDefault()}>{savingDefault ? '保存中…' : selectedIsDefault ? '目前預設' : '設為預設'}</button></div>
+  return <div className="picker-row model-picker-row"><select className="select-field" value={value} onChange={(event) => onChange(event.target.value)}><option value="">{models.length ? '選擇專案訓練模型' : '尚無專案訓練模型'}</option>{models.map((model) => <option key={model.path} value={model.path}>{model.default ? '★ ' : ''}{model.name} · {model.path.replaceAll('\\', '/').split('/').slice(-3).join('/')}</option>)}</select><button className="icon-btn" type="button" title="重新掃描專案模型" onClick={() => void onRefresh()}><Icon name="refresh" /></button><button className="model-default-btn" type="button" disabled={!value || selectedIsDefault || savingDefault} onClick={() => void saveDefault()}>{savingDefault ? '保存中…' : selectedIsDefault ? '目前預設' : '設為預設'}</button></div>
 }
 
 export function ActionButton({ children, icon, kind = 'default', disabled, onClick }: { children: React.ReactNode; icon?: Parameters<typeof Icon>[0]['name']; kind?: 'default' | 'primary' | 'danger'; disabled?: boolean; onClick?: () => void }) {
@@ -29,8 +29,9 @@ export function ActionButton({ children, icon, kind = 'default', disabled, onCli
 
 export function JobProgress({ job }: { job: JobRecord | null }) {
   if (!job) return <div className="empty-state compact">目前沒有執行中的工作</div>
+  const output = job.result && typeof job.result === 'object' && 'output' in job.result ? String(job.result.output) : ''
   const percent = job.total > 0 ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0
-  return <div className="job-progress"><div className="job-progress-head"><span className={`state-dot ${job.state}`} /><strong>{job.kind}</strong><span>{job.state}</span><span className="mono">{job.total > 0 ? `${job.completed}/${job.total}` : '—'}</span></div><div className="progress-track"><div className="progress-fill" style={{ width: job.total > 0 ? `${percent}%` : '22%' }} /></div><div className="job-message">{sanitizeTerminalOutput(job.message) || '準備中…'}</div></div>
+  return <div className="job-progress"><div className="job-progress-head"><span className={`state-dot ${job.state}`} /><strong>{job.kind === 'geo_sequence_recognition' ? '座標序列辨識' : job.kind}</strong><span>{({ running: '執行中', queued: '準備中', stopping: '停止中', completed: '已完成', cancelled: '已停止', error: '失敗' } as Record<string, string>)[job.state] ?? job.state}</span><span className="mono">{job.total > 0 ? `${job.completed}/${job.total}` : '—'}</span></div><div className="progress-track"><div className="progress-fill" style={{ width: job.total > 0 ? `${percent}%` : '22%' }} /></div><div className="job-message">{sanitizeTerminalOutput(job.message) || '準備中…'}</div>{output && <div className="job-message" style={{ overflowWrap: 'anywhere', userSelect: 'text' }}>結果位置：{output}</div>}</div>
 }
 
 export function JobConsole({ logs }: { logs: string[] }) {

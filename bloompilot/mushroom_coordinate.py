@@ -154,7 +154,7 @@ def mushroom_selection_card_center(image: np.ndarray) -> tuple[int, int] | None:
         if (
             width * 0.25 <= component_width <= width * 0.78
             and height * 0.035 <= component_height <= height * 0.16
-            and 0.20 <= center_x / width <= 0.80
+            and 0.10 <= center_x / width <= 0.90
             and 0.13 <= center_y / height <= 0.78
             and fill >= 0.35
         ):
@@ -268,6 +268,10 @@ class MushroomCoordinateResolver:
         self.clock = clock
         self._deadline: float | None = None
         self._last_image: np.ndarray | None = None
+        self._return_frames: list[np.ndarray] = []
+        self._recovery_directory: Path | None = None
+        self.recovery_count = 0
+        self.recovery_seconds = 0.0
 
     def resolve(
         self,
@@ -283,6 +287,8 @@ class MushroomCoordinateResolver:
         except TargetAlignmentError as exc:
             raise PreciseCoordinateError(str(exc)) from exc
         session = uuid.uuid4().hex
+        self._return_frames = []
+        self._recovery_directory = failure_dir / f"{session}_return" if failure_dir else None
         self._deadline = self.clock() + TARGET_TIMEOUT_SECONDS
         self._last_image = None
         lease_requested = False
@@ -298,8 +304,10 @@ class MushroomCoordinateResolver:
             candidates: Sequence[Mapping[str, object]] = [current]
             if detect_targets is not None:
                 interacted = True
-                if classify_pikmin_restart_image(initial) != RESTART_SCREEN_MAP:
-                    raise PreciseCoordinateError("取得座標前已離開 2D 地圖，正在恢復搜尋畫面。")
+                # The triggering frame can be taken during swipe inertia. Wait
+                # before inference/alignment, then retain the settled grid as
+                # the restoration baseline instead of undoing that inertia.
+                initial = self._settled_map()
                 candidates = detect_targets(initial)
                 cleared = self._clear_selection(initial, candidates)
                 if cleared is not initial:
@@ -307,6 +315,7 @@ class MushroomCoordinateResolver:
                 initial = cleared
                 shift = self._alignment(original, initial)
                 current = match_target(detection, original, initial, candidates, shift)
+                original = initial.copy()
             for attempt in range(MAX_TARGET_ADJUSTMENTS):
                 if target_is_safe(current, initial.shape):
                     break
@@ -320,7 +329,12 @@ class MushroomCoordinateResolver:
                 height, width = initial.shape[:2]
                 gesture = plan_map_drag(
                     initial.shape,
-                    (width * 0.50 - (x1 + x2) / 2, height * 0.52 - (y1 + y2) / 2),
+                    # At maximum zoom the map moves farther than the finger.
+                    # Keep overlapping landmarks for the next alignment check.
+                    (
+                        float(np.clip(width * 0.50 - (x1 + x2) / 2, -width * 0.12, width * 0.12)),
+                        float(np.clip(height * 0.52 - (y1 + y2) / 2, -height * 0.08, height * 0.08)),
+                    ),
                     candidates,
                 )
                 self._report(f"{adjustment_reason}，正在移到中央（{attempt + 1}/{MAX_TARGET_ADJUSTMENTS}）…")
@@ -334,6 +348,17 @@ class MushroomCoordinateResolver:
                 initial = updated
             if not target_is_safe(current, initial.shape):
                 raise PreciseCoordinateError("調整兩次後目標仍被畫面邊緣切到或點擊位置被介面遮住，精確座標未取得。")
+            if detect_targets is not None:
+                # Inference itself takes time. Never tap its coordinates unless
+                # a fresh frame still shows the same camera position/target.
+                verified = self._settled_map()
+                shift = self._alignment(initial, verified)
+                if max(abs(shift[0]), abs(shift[1])) > 2.5:
+                    candidates = detect_targets(verified)
+                    current = match_target(current, initial, verified, candidates, shift)
+                    if not target_is_safe(current, verified.shape):
+                        raise PreciseCoordinateError("地圖仍在移動，目標已離開可安全點擊的位置。")
+                initial = verified
             self._check_active()
             lease_requested = True
             self._command("beginCoordinateCapture", {"session": session, "timeoutMs": CAPTURE_TIMEOUT_MS})
@@ -543,9 +568,13 @@ class MushroomCoordinateResolver:
             if recover_map is None or recovery == 1:
                 break
             self._report("搜尋畫面無法確認，正在重新準備遊戲與目前搜尋格…")
+            self._save_return_diagnostics()
+            self.recovery_count += 1
+            recovery_started = self.clock()
             # The existing game recovery owns its startup timeout and stop checks.
             self._deadline = None
             recovery_result = recover_map()
+            self.recovery_seconds += self.clock() - recovery_started
             if not recovery_result:
                 break
             rebuilt_grid = (
@@ -679,13 +708,32 @@ class MushroomCoordinateResolver:
         self._check_active()
         self.adb.run("shell", "input", "tap", str(x), str(y), timeout=8)
 
+    def _save_return_diagnostics(self) -> None:
+        if self._recovery_directory is None:
+            return
+        try:
+            frames = self._return_frames + ([self._last_image] if self._last_image is not None else [])
+            for index, frame in enumerate(frames):
+                atomic_write_bytes(self._recovery_directory / f"{index:02d}.png", _encode_png(frame))
+        except (OSError, cv2.error) as exc:
+            self._report(f"無法保存返回地圖診斷影格：{exc}")
+
     def _return_to_map(self) -> bool:
         self._deadline = self.clock() + 12.0
         try:
             for _ in range(4):
                 image = self._capture()
+                self._return_frames.append(image.copy())
                 if classify_pikmin_restart_image(image) == RESTART_SCREEN_MAP:
-                    return True
+                    try:
+                        # A single map frame can be the outgoing page underneath
+                        # the intent/detail transition. Verify it has settled
+                        # before handing it to the scanner's restore routine.
+                        self._settled_map()
+                        return True
+                    except PreciseCoordinateError:
+                        self._check_active()
+                        continue
                 if mushroom_destination_menu_visible(image):
                     # Opening a map intent can leave this sheet over the detail
                     # page. Recheck the exposed page before choosing its close
@@ -698,10 +746,13 @@ class MushroomCoordinateResolver:
                     height, width = image.shape[:2]
                     self._tap(round(width * 0.10), round(height * 0.915))
                 else:
-                    self._check_active()
-                    self.adb.run("shell", "input", "keyevent", "4", timeout=8)
-                if self._wait_for(lambda frame: classify_pikmin_restart_image(frame) == RESTART_SCREEN_MAP, 2.0):
-                    return True
+                    # Unknown/animated pages are not permission to press Back:
+                    # the delayed gesture can land on the map and leave 2D.
+                    self._wait_for(lambda frame: mushroom_destination_menu_visible(frame)
+                                   or mushroom_detail_visible(frame)
+                                   or classify_pikmin_restart_image(frame) == RESTART_SCREEN_MAP, 2.0)
+                    continue
+                self._wait_for(lambda frame: classify_pikmin_restart_image(frame) == RESTART_SCREEN_MAP, 2.0)
         except (AutomationError, OSError, subprocess.TimeoutExpired):
             pass
         return False

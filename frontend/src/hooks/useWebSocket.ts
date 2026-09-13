@@ -11,7 +11,7 @@ export function useWebSocket() {
 
   const subscribe = useCallback((subscriber: Subscriber) => {
     subscribers.current.add(subscriber)
-    return () => subscribers.current.delete(subscriber)
+    return () => { subscribers.current.delete(subscriber) }
   }, [])
 
   useEffect(() => {

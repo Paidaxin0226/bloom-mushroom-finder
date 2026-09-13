@@ -11,7 +11,15 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from .device_control import (
+    DeviceControlError,
+    DeviceResponse,
+    UsbDeviceController,
+    reconnect_usb,
+    restart_locwarp,
+)
 from .map_targeting import map_camera_is_stable
+from .daily_review import daily_review_summary_visible, daily_review_mood_visible
 
 
 PIKMIN_PACKAGE = "com.nianticlabs.pikmin"
@@ -36,6 +44,7 @@ RESTART_SCREEN_GARDEN = RESTART_SCREEN_MAP_3D
 RESTART_SCREEN_HOME = "home"
 RESTART_SCREEN_CLOSABLE = "closable"
 RESTART_SCREEN_SAFETY = "safety"
+RESTART_SCREEN_DAILY_REVIEW = "daily_review"
 RESTART_SCREEN_UNKNOWN = "unknown"
 MAX_MAP_ZOOM_OUT_PINCHES = 8
 # The connected MI 9 repeatedly records Unity/Adreno native crashes after
@@ -442,6 +451,8 @@ def classify_pikmin_restart_image(image: np.ndarray | None) -> str:
     """Classify a decoded scrcpy/ADB frame without a PNG encode/decode cycle."""
     if image is None or not image.size:
         return RESTART_SCREEN_UNKNOWN
+    if daily_review_summary_visible(image) or daily_review_mood_visible(image):
+        return RESTART_SCREEN_DAILY_REVIEW
     height, width = image.shape[:2]
     if width > 360:
         analysis = cv2.resize(
@@ -497,10 +508,8 @@ def classify_pikmin_restart_image(image: np.ndarray | None) -> str:
         if tab_state != RESTART_SCREEN_UNKNOWN:
             return tab_state
 
-    # Keep the locator as a secondary signal for map themes where the centre
-    # view switcher has unusually low contrast.
-    if _pikmin_map_locator_visible(image):
-        return RESTART_SCREEN_MAP
+    # The recap/share button can resemble the locator. A locator by itself
+    # cannot prove either that this is a map or that the selected view is 2D.
     # Roads and flower animation can form a bright horizontal band in the same
     # area as the loading track. Confirmed map controls take priority over this
     # broad artwork heuristic, while safety/login overlays still take priority.
@@ -549,6 +558,7 @@ class PikminMemoryWatchdog:
         self.memory_pressure_recovery = memory_pressure_recovery
         self.next_poll_at = 0.0
         self.last_restart_at = float("-inf")
+        self.last_memory_recovery_at = float("-inf")
         self.consecutive_pressure = 0
         self.restart_count = 0
         self.last_error = ""
@@ -577,24 +587,81 @@ class PikminMemoryWatchdog:
     def _wait(self, seconds: float) -> bool:
         return not self.waiter(max(0.0, seconds))
 
+    def _wake_display(self) -> bool:
+        # USB-connected phones may report AC charging (MI 9 plug type 1).
+        # A USB-only mask leaves mStayOn=false, so cover all charging sources.
+        for arguments in (
+            ("shell", "svc", "power", "stayon", "true"),
+            ("shell", "input", "keyevent", "KEYCODE_WAKEUP"),
+            ("shell", "wm", "dismiss-keyguard"),
+        ):
+            if self.stop_event.is_set():
+                return False
+            self.adb.run(*arguments, timeout=8)
+        return self._wait(min(0.25, self.transition_wait_seconds))
+
     def _tap(self, x: int, y: int) -> None:
+        self._ensure_foreground()
         self.adb.run("shell", "input", "tap", str(x), str(y), timeout=8)
+
+    def _ensure_foreground(self) -> None:
+        ensure = getattr(self.adb, "ensure_pikmin_foreground", None)
+        if callable(ensure):
+            ensure()
 
     def _restart_screen_state(self) -> tuple[str, bool]:
         if self.capture_image is not None:
             image = self.capture_image()
-            return (
-                classify_pikmin_restart_image(image),
-                pikmin_map_locator_visible_image(image),
+        else:
+            payload = self.adb.capture_png(attempts=2, timeout=20)
+            image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+        state = classify_pikmin_restart_image(image)
+        if state in (RESTART_SCREEN_UNKNOWN, RESTART_SCREEN_DAILY_REVIEW):
+            from .daily_review import read_daily_review
+
+            self._review_action = None
+            visible, action = read_daily_review(
+                image, continuing=getattr(self, "_review_continuing", False),
             )
-        payload = self.adb.capture_png(attempts=2, timeout=20)
-        return classify_pikmin_restart_screen(payload), pikmin_map_locator_visible(payload)
+            if visible:
+                self._review_continuing = True
+                self._review_action = action
+                state = RESTART_SCREEN_DAILY_REVIEW
+        elif state in (RESTART_SCREEN_MAP, RESTART_SCREEN_MAP_3D, RESTART_SCREEN_HOME):
+            self._review_continuing = False
+        return state, pikmin_map_locator_visible_image(image)
+
+    def ensure_scan_map(self) -> bool:
+        """Check before gestures/recognition; True means the grid was reset."""
+        if self.stop_event.is_set():
+            return False
+        # Allow short transitions; no scan gesture is sent while unverified.
+        for attempt in range(3):
+            state, _ = self._restart_screen_state()
+            if state == RESTART_SCREEN_MAP:
+                return False
+            if state != RESTART_SCREEN_UNKNOWN or attempt == 2:
+                break
+            if not self._wait(0.15):
+                return False
+        self._report("搜尋畫面已離開 2D 地圖，暫停滑動並處理今日回顧或其他頁面…")
+        if self._open_map_from_current(startup=False):
+            return True
+        if self.stop_event.is_set():
+            return False
+        # Import at call time to avoid the existing watchdog/ADB module cycle.
+        from .phone_automation import MapRecoveryError
+
+        raise MapRecoveryError("無法關閉目前頁面並確認 2D 地圖，已停止搜尋，避免繼續誤操作。")
 
     def _wait_for_2d_map(self) -> tuple[bool, bool]:
         """Allow gesture animation and a stale streamed frame before rejecting 2D."""
         attempts = 12 if self.capture_image is not None else 3
         locator_visible = False
         for attempt in range(attempts):
+            if self.stop_event.is_set():
+                return False, locator_visible
+            self._ensure_foreground()
             state, locator_visible = self._restart_screen_state()
             if state == RESTART_SCREEN_MAP:
                 return True, locator_visible
@@ -693,10 +760,7 @@ class PikminMemoryWatchdog:
         # A long scan may let Android enter Doze while the USB connection stays
         # alive. Wake and keep the display on over USB before launching Unity;
         # otherwise screencap returns valid but completely black frames.
-        self.adb.run("shell", "svc", "power", "stayon", "usb", timeout=8)
-        self.adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", timeout=8)
-        self.adb.run("shell", "wm", "dismiss-keyguard", timeout=8)
-        if not self._wait(min(0.25, self.transition_wait_seconds)):
+        if not self._wake_display():
             return False
         self.adb.run(
             "shell",
@@ -708,11 +772,16 @@ class PikminMemoryWatchdog:
             "1",
             timeout=15,
         )
+        return self._open_map_from_current(startup=startup)
+
+    def _open_map_from_current(self, *, startup: bool) -> bool:
+        """Advance only recognized navigation controls, including night recap."""
         size = self.adb.screen_size()
         phase = "wait_startup"
         safety_tap_attempts = 0
         home_tap_attempts = 0
         map_switch_attempts = 0
+        review_tap_attempts = 0
         last_state = ""
         # scrcpy can sample quickly enough to react within a frame or two. ADB
         # screenshot fallback uses fewer attempts because each screencap itself
@@ -729,6 +798,7 @@ class PikminMemoryWatchdog:
                     RESTART_SCREEN_LOADING: "偵測到 Pikmin Bloom 加載畫面，正在等待完成…",
                     RESTART_SCREEN_CLOSABLE: "偵測到重啟後的彈窗或子畫面，正在關閉…",
                     RESTART_SCREEN_SAFETY: "偵測到可選的安全警示，正在按下確認…",
+                    RESTART_SCREEN_DAILY_REVIEW: "偵測到今日回顧，正在辨識跳過／下一步／完成按鈕…",
                     RESTART_SCREEN_HOME: "已確認 Pikmin Bloom 主畫面。",
                     RESTART_SCREEN_MAP_3D: "已進入 3D 地圖，正在準備切換為 2D 地圖…",
                     RESTART_SCREEN_MAP: "已確認 Pikmin Bloom 2D 地圖。",
@@ -745,6 +815,21 @@ class PikminMemoryWatchdog:
                 if message:
                     self._report(message)
                 last_state = state
+
+            if state == RESTART_SCREEN_DAILY_REVIEW:
+                action = getattr(self, "_review_action", None)
+                if review_tap_attempts >= 8:
+                    self._report("今日回顧已達操作上限，停止搜尋並保留目前畫面。")
+                    return False
+                if action is not None:
+                    if self.stop_event.is_set():
+                        return False
+                    self._tap(*action)
+                    review_tap_attempts += 1
+                phase = "wait_startup"
+                if self.clock() >= restart_deadline or not self._wait(self.transition_wait_seconds):
+                    return False
+                continue
 
             if state == RESTART_SCREEN_SAFETY:
                 if safety_tap_attempts >= 3:
@@ -832,6 +917,31 @@ class PikminMemoryWatchdog:
             self.next_poll_at = self.clock() + self.poll_seconds
         return restarted
 
+    def recover_usb_connection(self, controller: UsbDeviceController) -> DeviceResponse:
+        """At a scan checkpoint, free game RAM if ordinary reconnects fail.
+
+        Leave Pikmin stopped until the caller reapplies the waypoint and calls
+        recover_after_usb_service_restart(), which rebuilds the map. Relaunching
+        it here could reclaim LocWarp again before location has been restored.
+        """
+        try:
+            return reconnect_usb(controller, stop_event=self.stop_event, status=self.status)
+        except DeviceControlError:
+            if self.stop_event.is_set():
+                raise
+        self._report("USB 三次重連仍失敗，正在暫停 Pikmin Bloom 釋放記憶體，再重建控制服務…")
+        try:
+            self.adb.run("shell", "am", "force-stop", PIKMIN_PACKAGE, timeout=12)
+        except Exception as exc:
+            raise DeviceControlError(f"USB 完整恢復無法釋放遊戲記憶體：{exc}") from exc
+        if self.stop_event.is_set():
+            raise DeviceControlError("USB 控制恢復已取消。")
+        # One escalation only. restart_locwarp has its own finite reconnect
+        # budget and does not call this recovery method recursively.
+        return restart_locwarp(
+            controller, stop_event=self.stop_event, status=self.status, reason="usb",
+        )
+
     def recover_after_usb_service_restart(self) -> bool:
         """Restore the map after Android restarts LocWarp but leaves Pikmin alive.
 
@@ -842,26 +952,23 @@ class PikminMemoryWatchdog:
         """
         if self.stop_event.is_set():
             return False
-        self._report("USB 控制服務已重啟，正在確認 Pikmin 地圖狀態…")
-        for arguments, timeout in (
-            (("shell", "svc", "power", "stayon", "usb"), 8),
-            (("shell", "input", "keyevent", "KEYCODE_WAKEUP"), 8),
-            (("shell", "wm", "dismiss-keyguard"), 8),
-        ):
-            self.adb.run(*arguments, timeout=timeout)
-        if not self._wait(min(0.25, self.transition_wait_seconds)):
-            return False
         try:
-            verified, locator_visible = self._wait_for_2d_map()
+            if self._restore_live_map_after_usb_restart():
+                return True
         except Exception as exc:
-            self._report(
-                "USB 恢復後無法快速確認 Pikmin 地圖，改用完整遊戲恢復："
-                f"{str(exc).splitlines()[0]}"
-            )
-            return self.recover_after_foreground_loss()
+            self._report(f"USB 地圖快速恢復失敗：{str(exc).splitlines()[0]}")
+        if self.stop_event.is_set():
+            return False
+        self._report("USB 恢復途中無法確認地圖，改用完整遊戲恢復…")
+        return self.recover_after_foreground_loss()
+
+    def _restore_live_map_after_usb_restart(self) -> bool:
+        self._report("USB 控制服務已重啟，正在確認 Pikmin 地圖狀態…")
+        if not self._wake_display():
+            return False
+        verified, locator_visible = self._wait_for_2d_map()
         if not verified:
-            self._report("USB 恢復時 Pikmin 已不在 2D 地圖，改用完整遊戲恢復…")
-            return self.recover_after_foreground_loss()
+            return False
 
         size = self.adb.screen_size()
         if locator_visible:
@@ -885,6 +992,7 @@ class PikminMemoryWatchdog:
         if not self._wait_for_map_camera():
             self._report("USB 恢復後地圖動畫沒有停止，無法安全接續辨識。")
             return False
+        self._ensure_foreground()
         self.consecutive_pressure = 0
         self.next_poll_at = self.clock() + self.poll_seconds
         self._report("USB 控制與 2D 地圖均已恢復，正在接續目前搜尋格。")
@@ -896,6 +1004,10 @@ class PikminMemoryWatchdog:
             return False
         ready = False
         if not force_restart:
+            # The fast path must also wake and keep the display on. Otherwise
+            # a dark screenshot unnecessarily triggers a full game restart.
+            if not self._wake_display():
+                return False
             try:
                 state, locator_visible = self._restart_screen_state()
             except Exception as exc:
@@ -948,22 +1060,37 @@ class PikminMemoryWatchdog:
         if not snapshot.pressure:
             return False
 
-        game_text = "未取得" if snapshot.game_pss_mib is None else f"{snapshot.game_pss_mib:.0f} MB"
-        self._report(
-            f"手機記憶體壓力 {self.consecutive_pressure}/{self.pressure_samples}："
-            f"可用 {snapshot.available_mib:.0f}/{snapshot.total_mib:.0f} MB，"
-            f"Pikmin {game_text}。"
+        game_pressure = (
+            snapshot.game_pss_mib is not None
+            and snapshot.game_pss_mib >= snapshot.game_pss_threshold_mib
         )
-        if self.consecutive_pressure < self.pressure_samples:
+        critical = game_pressure and snapshot.available_mib < MIN_AVAILABLE_MIB
+        last_recovery = self.last_restart_at if game_pressure else max(
+            self.last_restart_at, self.last_memory_recovery_at,
+        )
+        cooldown_remaining = max(0.0, self.cooldown_seconds - (now - last_recovery))
+        game_text = "未取得" if snapshot.game_pss_mib is None else f"{snapshot.game_pss_mib:.0f} MB"
+        cooldown_text = f"（恢復冷卻剩餘 {cooldown_remaining:.0f} 秒）" if cooldown_remaining else ""
+        self._report(
+            f"手機記憶體壓力 {min(self.consecutive_pressure, self.pressure_samples)}/{self.pressure_samples}："
+            f"可用 {snapshot.available_mib:.0f}/{snapshot.total_mib:.0f} MB，"
+            f"Pikmin {game_text}。{cooldown_text}"
+        )
+        if self.consecutive_pressure < self.pressure_samples and not critical:
             return False
-        if now - self.last_restart_at < self.cooldown_seconds:
+        if cooldown_remaining:
             return False
 
+        if critical:
+            self._report("可用記憶體已低於 256 MB 且 Pikmin 占用偏高，立即重啟遊戲釋放記憶體…")
         self._publish(replace(snapshot, restarting=True))
-        if self.memory_pressure_recovery is not None:
+        if self.memory_pressure_recovery is not None and not game_pressure:
             restarted = self.memory_pressure_recovery()
             if restarted:
-                self.last_restart_at = now
+                # Restarting LocWarp does not reset Pikmin's age. Otherwise
+                # repeated USB recoveries postpone the preventive game restart
+                # forever while the game's memory keeps growing.
+                self.last_memory_recovery_at = self.clock()
         else:
             restarted = self.restart_game()
         self.consecutive_pressure = 0

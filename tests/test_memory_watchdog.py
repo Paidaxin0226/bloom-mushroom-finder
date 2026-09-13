@@ -5,7 +5,9 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from bloompilot.device_control import DeviceControlError, DeviceResponse
+from bloompilot.phone_automation import ForegroundAppError
 
 import cv2
 import numpy as np
@@ -285,7 +287,7 @@ class MemoryWatchdogTests(unittest.TestCase):
         self.assertEqual(snapshot.pressure_reason, "system_available")
 
     def test_usb_sequence_uses_custom_low_memory_recovery_instead_of_restarting_game(self) -> None:
-        client = FakeAdbClient(mem_available_mib=200)
+        client = FakeAdbClient(mem_available_mib=200, game_pss_mib=1500)
         recovery = Mock(return_value=True)
         now = [0.0]
         watchdog = PikminMemoryWatchdog(
@@ -304,7 +306,8 @@ class MemoryWatchdogTests(unittest.TestCase):
         self.assertTrue(watchdog.before_capture())
         recovery.assert_called_once_with()
         self.assertEqual(watchdog.restart_count, 0)
-        self.assertEqual(watchdog.last_restart_at, 1.0)
+        self.assertEqual(watchdog.last_restart_at, float("-inf"))
+        self.assertEqual(watchdog.last_memory_recovery_at, 1.0)
         self.assertFalse(any(
             command[:3] == ("shell", "am", "force-stop") for command in client.commands
         ))
@@ -315,7 +318,7 @@ class MemoryWatchdogTests(unittest.TestCase):
         self.assertEqual(snapshot.available_percent, 37.5)
 
     def test_sustained_pressure_restarts_and_restores_pikmin_map(self) -> None:
-        client = FakeAdbClient()
+        client = FakeAdbClient(mem_available_mib=300)
         now = [0.0]
         updates: list[dict[str, object]] = []
         messages: list[str] = []
@@ -339,12 +342,132 @@ class MemoryWatchdogTests(unittest.TestCase):
         self.assertTrue(client.recentered)
         self.assertEqual(client.zoom_repetitions, [MAX_MAP_ZOOM_OUT_PINCHES])
         self.assertIn(("shell", "am", "force-stop", PIKMIN_PACKAGE), client.commands)
-        self.assertIn(("shell", "svc", "power", "stayon", "usb"), client.commands)
+        self.assertIn(("shell", "svc", "power", "stayon", "true"), client.commands)
         self.assertIn(("shell", "input", "keyevent", "KEYCODE_WAKEUP"), client.commands)
         self.assertTrue(any(command[:3] == ("shell", "monkey", "-p") for command in client.commands))
         self.assertTrue(any(bool(update["restarting"]) for update in updates))
         self.assertFalse(bool(updates[-1]["pressure"]))
         self.assertTrue(any("重新啟動" in message for message in messages))
+
+    def test_reported_london_memory_pressure_restarts_game_on_first_sample(self) -> None:
+        watchdog = PikminMemoryWatchdog(Mock(), stop_event=threading.Event(), clock=lambda: 1000)
+        watchdog.sample = Mock(return_value=memory_snapshot(5398 * 1024, 217 * 1024, 2443 * 1024))
+        watchdog.memory_pressure_recovery = Mock(return_value=True)
+        watchdog.restart_game = Mock(return_value=True)
+        # A recent LocWarp restart must not suppress urgent game recovery.
+        watchdog.last_memory_recovery_at = 999
+        self.assertTrue(watchdog.before_capture())
+        watchdog.restart_game.assert_called_once_with()
+        watchdog.memory_pressure_recovery.assert_not_called()
+
+    def test_locwarp_recovery_keeps_cooldown_without_postponing_preventive_game_restart(self) -> None:
+        now = [1000.0]
+        watchdog = PikminMemoryWatchdog(
+            FakeAdbClient(mem_available_mib=300, game_pss_mib=1500),
+            stop_event=threading.Event(), clock=lambda: now[0], poll_seconds=1,
+            pressure_samples=1, memory_pressure_recovery=Mock(return_value=True),
+        )
+        watchdog.last_restart_at = 0
+        self.assertTrue(watchdog.before_capture())
+        self.assertEqual(watchdog.last_restart_at, 0)
+        self.assertEqual(watchdog.last_memory_recovery_at, 1000)
+        now[0] = 1001
+        self.assertFalse(watchdog.before_capture())
+        watchdog.memory_pressure_recovery.assert_called_once_with()
+        now[0] = 1800
+        watchdog.restart_game = Mock(return_value=True)
+        self.assertTrue(watchdog.before_capture())
+        watchdog.restart_game.assert_called_once_with(reason="preventive")
+
+    def test_critical_memory_still_respects_game_restart_cooldown(self) -> None:
+        watchdog = PikminMemoryWatchdog(Mock(), stop_event=threading.Event(), clock=lambda: 1000)
+        watchdog.sample = Mock(return_value=memory_snapshot(5398 * 1024, 217 * 1024, 2443 * 1024))
+        watchdog.last_restart_at = 999
+        watchdog.restart_game = Mock()
+        self.assertFalse(watchdog.before_capture())
+        watchdog.restart_game.assert_not_called()
+
+    def test_usb_escalation_stops_game_before_restarting_locwarp_and_leaves_map_to_caller(self) -> None:
+        adb = Mock()
+        stop = threading.Event()
+        watchdog = PikminMemoryWatchdog(adb, stop_event=stop)
+        controller = Mock()
+        expected = DeviceResponse(True, "paired", {}, {})
+
+        def restore(*_args, **_kwargs):
+            adb.run.assert_called_once_with("shell", "am", "force-stop", PIKMIN_PACKAGE, timeout=12)
+            return expected
+
+        with (
+            patch("bloompilot.memory_watchdog.reconnect_usb", side_effect=DeviceControlError("連續 3 次恢復失敗")) as reconnect,
+            patch("bloompilot.memory_watchdog.restart_locwarp", side_effect=restore) as restart,
+        ):
+            self.assertIs(watchdog.recover_usb_connection(controller), expected)
+        reconnect.assert_called_once()
+        restart.assert_called_once_with(controller, stop_event=stop, status=None, reason="usb")
+        adb.capture_png.assert_not_called()
+
+    def test_usb_recovery_escalates_once_and_propagates_failure(self) -> None:
+        watchdog = PikminMemoryWatchdog(Mock(), stop_event=threading.Event())
+        with (
+            patch("bloompilot.memory_watchdog.reconnect_usb", side_effect=DeviceControlError("disconnected")) as reconnect,
+            patch("bloompilot.memory_watchdog.restart_locwarp", side_effect=DeviceControlError("still disconnected")) as restart,
+        ):
+            with self.assertRaisesRegex(DeviceControlError, "still disconnected"):
+                watchdog.recover_usb_connection(Mock())
+        reconnect.assert_called_once()
+        restart.assert_called_once()
+
+    def test_usb_recovery_never_escalates_after_cancel_or_success(self) -> None:
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                stop = threading.Event()
+                adb = Mock()
+                watchdog = PikminMemoryWatchdog(adb, stop_event=stop)
+                expected = DeviceResponse(True, "paired", {}, {})
+
+                def connect(*_args, **_kwargs):
+                    if cancelled:
+                        stop.set()
+                        raise DeviceControlError("已取消")
+                    return expected
+
+                with (
+                    patch("bloompilot.memory_watchdog.reconnect_usb", side_effect=connect),
+                    patch("bloompilot.memory_watchdog.restart_locwarp") as restart,
+                ):
+                    if cancelled:
+                        with self.assertRaisesRegex(DeviceControlError, "已取消"):
+                            watchdog.recover_usb_connection(Mock())
+                    else:
+                        self.assertIs(watchdog.recover_usb_connection(Mock()), expected)
+                adb.run.assert_not_called()
+                restart.assert_not_called()
+
+    def test_usb_recovery_cancels_after_releasing_ram_without_restarting_locwarp(self) -> None:
+        stop = threading.Event()
+        adb = Mock()
+        adb.run.side_effect = lambda *args, **kwargs: stop.set()
+        watchdog = PikminMemoryWatchdog(adb, stop_event=stop)
+        with (
+            patch("bloompilot.memory_watchdog.reconnect_usb", side_effect=DeviceControlError("disconnected")),
+            patch("bloompilot.memory_watchdog.restart_locwarp") as restart,
+        ):
+            with self.assertRaisesRegex(DeviceControlError, "已取消"):
+                watchdog.recover_usb_connection(Mock())
+        restart.assert_not_called()
+
+    def test_usb_recovery_does_not_restart_locwarp_if_game_cannot_be_stopped(self) -> None:
+        adb = Mock()
+        adb.run.side_effect = RuntimeError("device offline")
+        watchdog = PikminMemoryWatchdog(adb, stop_event=threading.Event())
+        with (
+            patch("bloompilot.memory_watchdog.reconnect_usb", side_effect=DeviceControlError("disconnected")),
+            patch("bloompilot.memory_watchdog.restart_locwarp") as restart,
+        ):
+            with self.assertRaisesRegex(DeviceControlError, "無法釋放遊戲記憶體"):
+                watchdog.recover_usb_connection(Mock())
+        restart.assert_not_called()
 
     def test_long_game_session_restarts_before_known_gpu_crash_window(self) -> None:
         client = FakeAdbClient()
@@ -399,7 +522,10 @@ class MemoryWatchdogTests(unittest.TestCase):
         watchdog = PikminMemoryWatchdog(
             client,
             stop_event=threading.Event(),
-            capture_image=lambda: map_image,
+            capture_image=lambda: (
+                map_image if ("shell", "input", "keyevent", "KEYCODE_WAKEUP") in client.commands
+                else np.zeros_like(map_image)
+            ),
             transition_wait_seconds=0,
             waiter=lambda _seconds: False,
         )
@@ -409,6 +535,7 @@ class MemoryWatchdogTests(unittest.TestCase):
             any(command[:3] == ("shell", "am", "force-stop") for command in client.commands)
         )
         self.assertEqual(client.zoom_repetitions, [MAX_MAP_ZOOM_OUT_PINCHES])
+        self.assertIn(("shell", "svc", "power", "stayon", "true"), client.commands)
 
     def test_usb_service_recovery_keeps_live_game_and_existing_zoom(self) -> None:
         client = FakeAdbClient(restart_states=(
@@ -446,6 +573,50 @@ class MemoryWatchdogTests(unittest.TestCase):
         self.assertTrue(watchdog.recover_after_usb_service_restart())
         watchdog.recover_after_foreground_loss.assert_called_once_with()
         self.assertEqual(client.zoom_repetitions, [])
+
+    def test_usb_recovery_falls_back_after_each_map_normalization_failure(self) -> None:
+        for phase in ('recenter', 'north', 'camera', 'exception'):
+            with self.subTest(phase=phase):
+                client = FakeAdbClient()
+                watchdog = PikminMemoryWatchdog(client, stop_event=threading.Event(), waiter=lambda _: False)
+                watchdog._wait_for_2d_map = Mock(side_effect={
+                    'recenter': [(True, True), (False, False)],
+                    'north': [(True, False), (False, False)],
+                    'camera': [(True, False), (True, False)],
+                    'exception': [(True, True), ForegroundAppError('launcher')],
+                }[phase])
+                watchdog._wait_for_map_camera = Mock(return_value=False)
+                watchdog.recover_after_foreground_loss = Mock(return_value=True)
+                self.assertTrue(watchdog.recover_after_usb_service_restart())
+                watchdog.recover_after_foreground_loss.assert_called_once_with()
+
+    def test_usb_recovery_cancellation_never_relaunches_game(self) -> None:
+        stop = threading.Event()
+        watchdog = PikminMemoryWatchdog(FakeAdbClient(), stop_event=stop)
+        def cancelled():
+            stop.set()
+            return False
+        watchdog._restore_live_map_after_usb_restart = cancelled
+        watchdog.recover_after_foreground_loss = Mock()
+        self.assertFalse(watchdog.recover_after_usb_service_restart())
+        watchdog.recover_after_foreground_loss.assert_not_called()
+
+    def test_north_tap_rechecks_foreground_before_injecting_input(self) -> None:
+        client = FakeAdbClient()
+        client.ensure_pikmin_foreground = Mock(side_effect=ForegroundAppError('launcher'))
+        watchdog = PikminMemoryWatchdog(client, stop_event=threading.Event())
+        with self.assertRaises(ForegroundAppError):
+            watchdog._tap(970, 147)
+        self.assertFalse(client.commands)
+
+    def test_usb_recovery_rejects_stale_map_when_launcher_has_focus(self) -> None:
+        client = FakeAdbClient(restart_states=(RESTART_SCREEN_MAP,))
+        client.ensure_pikmin_foreground = Mock(side_effect=ForegroundAppError('launcher'))
+        watchdog = PikminMemoryWatchdog(client, stop_event=threading.Event(), waiter=lambda _: False)
+        watchdog.recover_after_foreground_loss = Mock(return_value=True)
+        self.assertTrue(watchdog.recover_after_usb_service_restart())
+        watchdog.recover_after_foreground_loss.assert_called_once_with()
+        self.assertFalse(client.workflow_actions)
 
     def test_map_preparation_retries_transitional_frames_after_each_gesture(self) -> None:
         client = FakeAdbClient()

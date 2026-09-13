@@ -16,6 +16,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -24,7 +25,7 @@ import numpy as np
 import yaml
 
 from ..artifacts import ArtifactManager
-from ..dataset_builder import generate_dataset, load_config
+from ..dataset_builder import discover_targets, generate_dataset, load_config, validate_target_sizes
 from ..device_control import DeviceControlError, UsbDeviceController
 from ..discord_webhook import (
     DiscordWebhookNotifier,
@@ -56,7 +57,7 @@ from ..phone_automation import (
     resolve_target_selection,
     run_recognition_scan,
 )
-from ..detection import detections_with_crops, draw_detection_records
+from ..detection import detections_with_crops, draw_detection_records, filter_terrain_false_positives
 from ..badge_number import (
     enrich_detections_with_badge_numbers,
     filter_detections_by_participant_count,
@@ -64,7 +65,10 @@ from ..badge_number import (
 )
 from ..project_defaults import INFERENCE_IMAGE_SIZE, VIEWPORT_WIDTH_M, fixed_studio_settings
 from ..route_library import RouteLibrary
-from ..memory_watchdog import PikminMemoryWatchdog, pikmin_map_locator_visible
+from ..memory_watchdog import (
+    PikminMemoryWatchdog, pikmin_map_locator_visible,
+    RESTART_SCREEN_MAP, classify_pikmin_restart_image,
+)
 from ..monthly_workflow import (
     MonthlyWorkflowStore,
     annotate_training_run,
@@ -74,8 +78,9 @@ from ..monthly_workflow import (
 from ..monthly_route import ensure_monthly_background_route
 from ..train import list_generated_datasets, resolve_dataset
 from ..phone_tools import ScrcpyControlWindow, find_toolchain, list_adb_devices
+from ..phone_state import PhoneStateMonitor
 from ..phone_stream import ScrcpyFrameSource
-from ..settings_store import load_studio_settings, save_studio_settings
+from ..settings_store import STUDIO_SETTINGS_LOCK, load_studio_settings, merge_studio_settings, save_studio_settings
 from ..training_control import TrainingControl
 from ..training_output import sanitize_training_output
 from ..viewport_geo import coordinate_from_offset
@@ -164,11 +169,27 @@ def _class_names_from_dataset(dataset_dir: Path) -> list[str]:
     return []
 
 
+@lru_cache(maxsize=32)
+def _checkpoint_class_names(path: str, modified_ns: int, size_bytes: int) -> tuple[str, ...]:
+    """Recover older models after their disposable dataset was removed."""
+    del modified_ns, size_bytes
+    try:
+        from ultralytics import YOLO
+        names = normalize_model_class_names(YOLO(path).names)
+        return tuple(names[key] for key in sorted(names))
+    except Exception:
+        LOGGER.warning("無法讀取模型類別：%s", path, exc_info=True)
+        return ()
+
+
 def _model_class_names(model_path: Path, project_root: Path) -> list[str]:
     run_dir = model_path.parent.parent
     candidates: list[Path] = []
     try:
         manifest = json.loads((run_dir / ".artifact.json").read_text(encoding="utf-8"))
+        names = manifest.get("class_names") if isinstance(manifest, dict) else None
+        if isinstance(names, list) and names and all(isinstance(name, str) for name in names):
+            return names
         dataset = manifest.get("dataset") if isinstance(manifest, dict) else None
         if isinstance(dataset, str) and dataset.strip():
             candidate = Path(dataset)
@@ -193,6 +214,9 @@ def _model_class_names(model_path: Path, project_root: Path) -> list[str]:
                     return names
         except (OSError, ValueError):
             continue
+    if model_path.is_file() and model_path.resolve().is_relative_to(project_root.resolve()):
+        stat = model_path.stat()
+        return list(_checkpoint_class_names(str(model_path.resolve()), stat.st_mtime_ns, stat.st_size))
     return []
 
 
@@ -302,6 +326,7 @@ class JobRecord:
     id: str
     kind: str
     state: str = "queued"
+    revision: int = 0
     message: str = ""
     completed: int = 0
     total: int = 0
@@ -310,6 +335,8 @@ class JobRecord:
     result: Any = None
     error: str | None = None
     paused: bool = False
+    pause_requested: bool = False
+    sequence_name: str | None = None
     resuming: bool = False
     excursion: dict[str, Any] | None = None
     resume_coordinate: dict[str, float] | None = None
@@ -353,8 +380,7 @@ class JobPauseGate:
             self._paused = False
             return restored
 
-    def request(self, timeout: float = 15.0) -> None:
-        deadline = time.monotonic() + max(0.1, float(timeout))
+    def begin(self) -> None:
         with self._condition:
             if self._requested:
                 raise RuntimeError("辨識工作已經暫停。")
@@ -362,13 +388,23 @@ class JobPauseGate:
             self._paused = False
             self._restored = False
             self._condition.notify_all()
+
+    def wait(self, timeout: float | None = None) -> None:
+        deadline = None if timeout is None else time.monotonic() + max(0.1, timeout)
+        with self._condition:
             while not self._paused:
-                remaining = deadline - time.monotonic()
+                if not self._requested:
+                    raise RuntimeError("暫停要求已取消或工作已結束。")
+                remaining = 0.25 if deadline is None else deadline - time.monotonic()
                 if remaining <= 0:
                     self._requested = False
                     self._condition.notify_all()
                     raise RuntimeError("等待辨識工作進入安全暫停點逾時，請稍後再試。")
                 self._condition.wait(min(0.25, remaining))
+
+    def request(self, timeout: float | None = None) -> None:
+        self.begin()
+        self.wait(timeout)
 
     def resume(self, *, restored: bool) -> None:
         with self._condition:
@@ -547,6 +583,7 @@ class JobManager:
         *,
         recognition_filter: dict[str, Any] | None = None,
         route_path: str | None = None,
+        sequence_name: str | None = None,
     ) -> JobRecord:
         with self._lock:
             active = self.active()
@@ -557,6 +594,7 @@ class JobManager:
                 id=job_id,
                 kind=kind,
                 route_path=route_path,
+                sequence_name=sequence_name,
                 recognition_filter=(
                     dict(recognition_filter) if isinstance(recognition_filter, dict) else None
                 ),
@@ -592,11 +630,21 @@ class JobManager:
             result = runner(context)
             with self._lock:
                 state = "cancelled" if stop_event.is_set() else "completed"
-                self.update(record.id, state=state, result=json_value(result), finished_at=utc_now())
+                payload = json_value(result)
+                message = "工作已停止。" if state == "cancelled" else "工作已完成。"
+                summary = payload.get("summary") if isinstance(payload, dict) else None
+                if isinstance(summary, dict) and "visited" in summary:
+                    message += f" 已搜尋 {summary['visited']} 格、跳過 {summary.get('skipped_points', 0)} 格、命中 {summary.get('detection_count', 0)} 筆；結果已保存。"
+                    if "coordinate_recovery_count" in summary:
+                        message += f" 地圖重建 {summary['coordinate_recovery_count']} 次（{summary.get('coordinate_recovery_seconds', 0):g} 秒）。"
+                    message += str(summary.get("final_movement_message", ""))
+                self.update(record.id, state=state, result=payload, message=message,
+                            paused=False, pause_requested=False, resuming=False, finished_at=utc_now())
         except JobCancelled as exc:
             self.update(
                 record.id,
                 state="cancelled",
+                paused=False, pause_requested=False, resuming=False,
                 message=str(exc),
                 finished_at=utc_now(),
             )
@@ -605,6 +653,7 @@ class JobManager:
             self.update(
                 record.id,
                 state="error",
+                paused=False, pause_requested=False, resuming=False,
                 message=str(exc),
                 error=traceback.format_exc(),
                 finished_at=utc_now(),
@@ -628,7 +677,8 @@ class JobManager:
             for key, value in changes.items():
                 if hasattr(record, key):
                     setattr(record, key, value)
-        event: dict[str, Any] = {"type": "job_update", "job": record.to_dict()}
+            record.revision += 1
+            event: dict[str, Any] = {"type": "job_update", "job": record.to_dict()}
         if detail is not None:
             event["detail"] = detail
         self.hub.publish(event)
@@ -647,6 +697,7 @@ class JobManager:
             if pause_gate is not None:
                 pause_gate.cancel()
             if record.state in {"queued", "running"}:
+                record.pause_requested = False
                 record.state = "stopping"
                 record.message = "正在安全停止…"
         self._publish(record)
@@ -695,7 +746,7 @@ class JobManager:
                 ),
             )
 
-    def pause_recognition(self, job_id: str, *, timeout: float = 15.0) -> JobRecord:
+    def begin_recognition_pause(self, job_id: str) -> JobRecord:
         with self._lock:
             record = self.get(job_id)
             if (
@@ -711,13 +762,31 @@ class JobManager:
             if job_id in self._pausing:
                 raise RuntimeError("辨識工作正在安全暫停。")
             gate = self._pause_gates[job_id]
+            gate.begin()
             self._pausing.add(job_id)
+            return self.update(job_id, pause_requested=True, message="已要求暫停；完成目前操作後會自動進入安全暫停。")
+
+    def await_recognition_pause(self, job_id: str, *, timeout: float | None = None) -> JobRecord:
+        gate = self._pause_gates[job_id]
         try:
-            gate.request(timeout)
-            return self.update(job_id, paused=True, message="辨識已安全暫停。")
+            gate.wait(timeout)
+            with self._lock:
+                record = self.get(job_id)
+                if record.state != "running" or self._stops[job_id].is_set() or not record.pause_requested:
+                    raise RuntimeError("暫停要求已取消或工作已結束。")
+                return self.update(job_id, paused=True, pause_requested=False, message="辨識已安全暫停。")
+        except Exception:
+            with self._lock:
+                if self.get(job_id).pause_requested:
+                    self.cancel_recognition_pause(job_id)
+            raise
         finally:
             with self._lock:
                 self._pausing.discard(job_id)
+
+    def pause_recognition(self, job_id: str, *, timeout: float | None = None) -> JobRecord:
+        self.begin_recognition_pause(job_id)
+        return self.await_recognition_pause(job_id, timeout=timeout)
 
     def set_recognition_filter(
         self,
@@ -757,10 +826,11 @@ class JobManager:
         with self._lock:
             record = self.get(job_id)
             gate = self._pause_gates[job_id]
-        gate.resume(restored=False)
+        gate.cancel()
         return self.update(
             job_id,
             paused=False,
+            pause_requested=False,
             resuming=False,
             excursion=None,
             resume_coordinate=None,
@@ -891,6 +961,7 @@ class AppRuntime:
         )
         self.jobs = JobManager(self.hub, detection_listener=self.discord_notifier.notify)
         self.device = DeviceSession(self.hub)
+        self.phone_monitor = PhoneStateMonitor()
         self.screen_control = ScrcpyControlWindow()
         self.route_library = RouteLibrary(ROUTES_DIR)
         self.monthly_workflow = MonthlyWorkflowStore()
@@ -925,7 +996,23 @@ class AppRuntime:
         return self.device.disconnect()
 
     def device_status(self) -> dict[str, Any]:
-        return self._device_calibration_status(self.device.status())
+        serial = self.device.serial
+        phone = self.phone_state(serial) if serial else None
+        if phone and phone["adb_state"] != "device":
+            return {"connected": False, "serial": serial, "phone": phone}
+        try:
+            result = self._device_calibration_status(self.device.status())
+        except DeviceControlError as exc:
+            result = {"connected": False, "serial": serial, "connection_error": str(exc)}
+        if phone is not None:
+            result["phone"] = phone
+        return result
+
+    def phone_state(self, serial: str) -> dict[str, Any]:
+        return self.phone_monitor.read(find_toolchain().adb, serial)
+
+    def wake_phone(self, serial: str) -> dict[str, Any]:
+        return self.phone_monitor.wake(find_toolchain().adb, serial)
 
     def device_scale(self, serial: str) -> dict[str, Any]:
         calibration = self.device_scales.get(serial)
@@ -1318,14 +1405,19 @@ class AppRuntime:
         config.pop("_project_root", None)
         return {"settings": fixed_studio_settings(load_studio_settings()), "effective_config": config}
 
+    def patch_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
+        with STUDIO_SETTINGS_LOCK:
+            return self.save_settings(merge_studio_settings(load_studio_settings(), changes))
+
     def save_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        settings = normalize_discord_webhook_settings(fixed_studio_settings(settings))
-        discord = settings.get("discord_webhook", {})
-        if discord.get("enabled") and discord.get("mode") == "bot":
-            discord["channel_id"] = resolve_bot_channel(discord["bot_token"], discord["channel_id"])
-        save_studio_settings(settings)
-        self.hub.publish({"type": "settings_update", "settings": json_value(settings)})
-        return self.settings_payload()
+        with STUDIO_SETTINGS_LOCK:
+            settings = normalize_discord_webhook_settings(fixed_studio_settings(settings))
+            discord = settings.get("discord_webhook", {})
+            if discord.get("enabled") and discord.get("mode") == "bot":
+                discord["channel_id"] = resolve_bot_channel(discord["bot_token"], discord["channel_id"])
+            save_studio_settings(settings)
+            self.hub.publish({"type": "settings_update", "settings": json_value(settings)})
+            return self.settings_payload()
 
     def test_discord_webhook(self, webhook_url: str) -> dict[str, Any]:
         post_discord_webhook(webhook_url, build_discord_test_payload())
@@ -1366,30 +1458,47 @@ class AppRuntime:
         manager = ArtifactManager(self.config())
         paths = self._trained_model_paths(manager)
         default = self._stored_default_model(manager, paths)
-        return [
-            {
+        models = []
+        for path in paths:
+            names = _model_class_names(path, manager.project_root)
+            try:
+                artifact = json.loads((path.parent.parent / ".artifact.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                artifact = {}
+            monthly = artifact.get("monthly_workflow") or {}
+            cycle = monthly.get("cycle") or str(artifact.get("created_at") or "")[:7]
+            try:
+                cycle = validate_cycle(str(cycle))
+            except ValueError:
+                cycle = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m")
+            contains_activity = monthly.get("role") == "event" or any(
+                name.casefold().startswith("event") for name in names
+            )
+            models.append({
                 "path": str(path),
-                "name": f"{path.parent.parent.name} / {path.name}",
+                "name": f"{cycle}｜{'含活動菇' if contains_activity else '不含活動菇'}",
+                "cycle": cycle,
+                "contains_activity": contains_activity,
                 "size_bytes": path.stat().st_size,
                 "default": path == default,
-                "class_names": _model_class_names(path, manager.project_root),
-            }
-            for path in paths
-        ]
+                "class_names": names,
+            })
+        return models
 
     def set_default_recognition_model(self, model_path: str) -> dict[str, Any]:
-        manager = ArtifactManager(self.config())
-        paths = self._trained_model_paths(manager)
-        requested = Path(model_path)
-        requested = requested if requested.is_absolute() else manager.project_root / requested
-        requested = requested.resolve()
-        if requested not in paths:
-            raise ValueError("預設模型只能選擇專案 outputs/training 內已訓練的模型")
-        settings = fixed_studio_settings(load_studio_settings())
-        settings["recognition_default_model"] = requested.relative_to(manager.project_root).as_posix()
-        save_studio_settings(settings)
-        self.hub.publish({"type": "settings_update", "settings": json_value(settings)})
-        return next(item for item in self.models() if item["path"] == str(requested))
+        with STUDIO_SETTINGS_LOCK:
+            manager = ArtifactManager(self.config())
+            paths = self._trained_model_paths(manager)
+            requested = Path(model_path)
+            requested = requested if requested.is_absolute() else manager.project_root / requested
+            requested = requested.resolve()
+            if requested not in paths:
+                raise ValueError("預設模型只能選擇專案 outputs/training 內已訓練的模型")
+            settings = fixed_studio_settings(load_studio_settings())
+            settings["recognition_default_model"] = requested.relative_to(manager.project_root).as_posix()
+            save_studio_settings(settings)
+            self.hub.publish({"type": "settings_update", "settings": json_value(settings)})
+            return next(item for item in self.models() if item["path"] == str(requested))
 
     def datasets(self) -> list[dict[str, Any]]:
         return list_generated_datasets(self.config())
@@ -1399,7 +1508,7 @@ class AppRuntime:
         if self.route_library.directory.resolve() == ROUTES_DIR.resolve():
             return [
                 route for route in routes
-                if route["path"] == "pikmin_inhabited/less_known_inhabited.json"
+                if route["imported"] or route["path"] == "pikmin_inhabited/less_known_inhabited.json"
             ]
         return routes
 
@@ -1454,6 +1563,15 @@ class AppRuntime:
     def monthly_background_file(self, cycle: str, relative_path: str) -> Path:
         return self.monthly_workflow.background_file(validate_cycle(cycle), relative_path)
 
+    def monthly_background_thumbnail(self, cycle: str, relative_path: str) -> bytes:
+        return self.monthly_workflow.background_thumbnail(validate_cycle(cycle), relative_path)
+
+    def delete_monthly_backgrounds(self, cycle: str, paths: list[str]) -> dict[str, Any]:
+        if self.jobs.active() is not None:
+            raise RuntimeError("工作執行中，請等待完成後再刪除背景。")
+        self.monthly_workflow.delete_backgrounds(validate_cycle(cycle), paths)
+        return self.monthly_status(cycle)
+
     def delete_monthly_background(self, cycle: str, relative_path: str) -> dict[str, Any]:
         if self.jobs.active() is not None:
             raise RuntimeError("工作執行中，請等待完成後再刪除背景。")
@@ -1503,13 +1621,24 @@ class AppRuntime:
     def route_path(self, relative_path: str) -> Path:
         return self.route_library.route_path(relative_path)
 
+    def _check_route_editable(self, relative_path: str) -> None:
+        active = self.jobs.active()
+        if active is not None and active.state in {"queued", "running", "stopping"} and active.route_path and Path(active.route_path) == Path(relative_path):
+            raise ValueError("此路線正在執行，請先停止辨識再覆寫或刪除；刪除目前節點請使用工作控制。")
+
     def import_route(self, source_name: str, data: Any) -> dict[str, Any]:
+        from ..route_library import _safe_filename, _candidate_sequence
+
+        fallback = str(_candidate_sequence(data).get("name") or "匯入的座標序列")
+        self._check_route_editable("imported/" + _safe_filename(source_name, fallback))
         route = self.route_library.import_document(source_name, data)
         self.hub.publish({"type": "routes_update"})
         return route
 
     def delete_route(self, relative_path: str) -> dict[str, Any]:
-        route = self.route_library.delete(relative_path)
+        path = self.route_library.route_path(relative_path).relative_to(self.route_library.directory.resolve()).as_posix()
+        self._check_route_editable(path)
+        route = self.route_library.delete(path)
         self.hub.publish({"type": "routes_update"})
         return route
 
@@ -1720,6 +1849,7 @@ class AppRuntime:
             runner,
             recognition_filter=initial_filter,
             route_path=route_path,
+            sequence_name=sequence_name,
         )
 
     def start_live_recognition(self, payload: dict[str, Any]) -> JobRecord:
@@ -1761,6 +1891,7 @@ class AppRuntime:
                 raise RuntimeError("即時辨識開始前無法完成遊戲重啟與最大範圍地圖準備。")
             from ..mushroom_coordinate import (
                 MushroomCoordinateResolver,
+                PreciseCoordinateCache,
                 enrich_detections_with_precise_coordinates,
             )
 
@@ -1795,7 +1926,7 @@ class AppRuntime:
             frames = 0
             current = self.device.status().get("current")
             center = current if isinstance(current, dict) and "lat" in current and "lng" in current else None
-            precise_cache: dict[tuple[str, int, int], dict[str, object]] = {}
+            precise_cache = PreciseCoordinateCache()
             while not ctx.stop_event.is_set():
                 if ctx.pause_checkpoint():
                     current = self.device.status().get("current")
@@ -1818,6 +1949,8 @@ class AppRuntime:
                     live_filter.get("participant_count")
                 )
                 memory_watchdog.before_capture()
+                if memory_watchdog.ensure_scan_map():
+                    precise_cache.clear()
                 if ctx.stop_event.is_set():
                     break
                 if frame_source is not None:
@@ -1827,39 +1960,28 @@ class AppRuntime:
                     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
                     if frame is None:
                         raise RuntimeError("無法解碼手機畫面。")
+                if classify_pikmin_restart_image(frame) != RESTART_SCREEN_MAP:
+                    # A modal arrived after the pre-capture check. Discard it.
+                    memory_watchdog.ensure_scan_map()
+                    precise_cache.clear()
+                    continue
                 result = model.predict(frame, **args)[0]
-                detections = detections_from_result(result)
+                detections = filter_terrain_false_positives(frame, detections_from_result(result))
                 enrich_detections_with_badge_numbers(frame, detections)
                 detections = filter_detections_by_participant_count(
                     detections, participant_count
                 )
-                unresolved: list[dict[str, object]] = []
-                for detection in detections:
-                    xyxy = detection.get("xyxy")
-                    if isinstance(xyxy, (list, tuple)) and len(xyxy) == 4:
-                        try:
-                            center_x = (float(xyxy[0]) + float(xyxy[2])) / 2.0
-                            center_y = (float(xyxy[1]) + float(xyxy[3])) / 2.0
-                        except (TypeError, ValueError, OverflowError):
-                            unresolved.append(detection)
-                            continue
-                        key = (
-                            str(detection.get("class_name", "")),
-                            round(center_x / 32.0),
-                            round(center_y / 32.0),
-                        )
-                        cached = precise_cache.get(key)
-                        if cached is not None:
-                            detection["precise_coordinate"] = dict(cached)
-                            continue
-                        detection["_precise_cache_key"] = key
-                    unresolved.append(detection)
-                enrich_detections_with_precise_coordinates(unresolved, coordinate_resolver)
-                for detection in unresolved:
-                    key = detection.pop("_precise_cache_key", None)
-                    coordinate = detection.get("precise_coordinate")
-                    if isinstance(key, tuple) and isinstance(coordinate, dict):
-                        precise_cache[key] = dict(coordinate)
+                unresolved = precise_cache.pending(detections, frame)
+                recheck_args = dict(args)
+                recheck_args.pop("classes", None)
+                enrich_detections_with_precise_coordinates(
+                    unresolved, coordinate_resolver, reference_image=frame,
+                    detect_targets=lambda image: filter_terrain_false_positives(
+                        image, detections_from_result(model.predict(image, **recheck_args)[0]),
+                    ),
+                    recover_map=memory_watchdog.prepare_for_scan,
+                )
+                precise_cache.remember(unresolved, frame)
                 frames += 1
                 annotated, _ = draw_detection_records(detections, frame)
                 ctx.preview(annotated)
@@ -1903,39 +2025,55 @@ class AppRuntime:
             command.append("--no-resume")
         prefix = f"{phase}｜" if phase else ""
         ctx.message(f"{prefix}正在啟動訓練程序…")
-        process = subprocess.Popen(
-            command,
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        # A durable file stays writable if the desktop/backend exits. A pipe
+        # would make tqdm/print fail with EINVAL or BrokenPipeError on Windows.
+        log_path = control.directory / f"{ctx.job_id}_{dataset.name}.log"
+        with log_path.open("w", encoding="utf-8") as output:
+            process = subprocess.Popen(
+                command,
+                cwd=PROJECT_ROOT,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
         lines: queue.Queue[str | None] = queue.Queue()
 
         def read_output() -> None:
-            assert process.stdout is not None
-            for line in process.stdout:
-                lines.put(sanitize_training_output(line))
-            lines.put(None)
+            try:
+                with log_path.open("r", encoding="utf-8", errors="replace") as output:
+                    while True:
+                        line = output.readline()
+                        if line:
+                            lines.put(sanitize_training_output(line))
+                        elif process.poll() is not None:
+                            break
+                        else:
+                            time.sleep(0.1)
+            finally:
+                lines.put(None)
 
         threading.Thread(target=read_output, daemon=True).start()
         output_tail: list[str] = []
-        while process.poll() is None or not lines.empty():
+        output_done = False
+        next_status = 0.0
+        while process.poll() is None or not output_done:
             self.jobs.sync_training_stop(ctx.job_id, control)
-            try:
-                line = lines.get(timeout=0.5)
-            except queue.Empty:
+            if time.monotonic() >= next_status:
                 status = control.read_status()
-                if status:
+                # uv's Windows launcher spawns a child with a different PID.
+                # Match the dataset to exclude a previous stage's stale status.
+                status_dataset = status.get("dataset")
+                if status_dataset and Path(str(status_dataset)).resolve() == dataset.resolve():
                     completed = int(status.get("completed_epoch", 0) or 0)
                     total = int(status.get("total_epochs", 0) or 0)
                     ctx.progress(completed, total, {**status, "phase": phase})
+                next_status = time.monotonic() + 1.0
+            try:
+                line = lines.get(timeout=0.5)
+            except queue.Empty:
                 continue
             if line is None:
+                output_done = True
                 continue
             output_tail.append(line)
             output_tail = output_tail[-80:]
@@ -1979,8 +2117,18 @@ class AppRuntime:
             previous_resident_source = self.monthly_workflow.resident_metadata().get("source")
             previous_default_model = load_studio_settings().get("recognition_default_model")
 
+            # Check event sprites before spending hours training the resident stage.
+            ctx.message("正在檢查本月活動菇素材與可接續進度…")
+            preflight = self.monthly_workflow.dataset_config(config, cycle, mixed_targets=True)
+            targets, _ = discover_targets(preflight, callback=ctx.message)
+            validate_target_sizes(targets, preflight["generation"])
+
             def generate(role: str, *, mixed: bool) -> Path:
                 label = "常駐模型資料" if role == "resident" else "活動菇混合資料"
+                existing = self.monthly_workflow.reusable_dataset(config, cycle, role)
+                if existing is not None:
+                    ctx.message(f"{label}｜沿用已合成資料集：{existing.name}")
+                    return existing
                 ctx.message(f"{label}｜正在合成資料集…")
 
                 def report(message: str) -> None:
@@ -2002,47 +2150,66 @@ class AppRuntime:
                 )
                 return dataset
 
-            resident_dataset = generate("resident", mixed=False)
-            resident_result = self._run_training_process(
-                ctx,
-                resident_dataset,
-                phase="常駐模型強化",
-                model=resident_model,
-                run_name=f"resident_{cycle}_{stamp}",
-                allow_resume=False,
-                require_completed=True,
-            )
-            resident_best = Path(str(resident_result["status"].get("checkpoint") or "")).resolve()
+            resident_run = self.monthly_workflow.completed_training_run(config, cycle, "resident")
+            resident_dataset = self.monthly_workflow.reusable_dataset(config, cycle, "resident")
+            if resident_run is not None:
+                ctx.message("常駐模型強化｜已完成，沿用保存的模型，接續活動菇階段。")
+                resident_best = resident_run / "weights/best.pt"
+            else:
+                resident_dataset = generate("resident", mixed=False)
+                resident_result = self._run_training_process(
+                    ctx,
+                    resident_dataset,
+                    phase="常駐模型強化",
+                    model=resident_model,
+                    run_name=f"resident_{cycle}_{stamp}",
+                    allow_resume=True,
+                    require_completed=True,
+                )
+                resident_best = Path(str(resident_result["status"].get("checkpoint") or "")).resolve()
             if not resident_best.is_file():
                 raise RuntimeError("常駐模型強化完成，但找不到 best.pt。")
             resident_run = resident_best.parent.parent
             annotate_training_run(resident_run, cycle=cycle, role="resident")
-            resident_metadata = json.loads(
-                (resident_dataset / "metadata.json").read_text(encoding="utf-8")
-            )
-            promoted = self.monthly_workflow.set_resident_model(
-                resident_best,
-                source_label=f"{cycle} 每月流程：常駐模型強化",
-                class_names=resident_metadata.get("class_names", []),
-                cycle=cycle,
-            )
+            current_metadata = self.monthly_workflow.resident_metadata()
+            current_source = self.monthly_workflow.project_root / str(current_metadata.get("source") or "")
+            if current_metadata.get("cycle") == cycle and current_source.resolve() == resident_best:
+                promoted = resident_model
+            else:
+                resident_metadata = json.loads(
+                    (resident_dataset / "metadata.json").read_text(encoding="utf-8")
+                )
+                promoted = self.monthly_workflow.set_resident_model(
+                    resident_best,
+                    source_label=f"{cycle} 每月流程：常駐模型強化",
+                    class_names=resident_metadata.get("class_names", []),
+                    cycle=cycle,
+                )
             self.monthly_workflow.update_manifest(
                 cycle,
                 resident_training_run=str(resident_run),
                 resident_promoted_at=utc_now(),
             )
+            self.monthly_workflow.delete_superseded_resident_source(
+                previous_resident_source, keep=(resident_best, promoted)
+            )
 
             event_dataset = generate("event", mixed=True)
-            event_result = self._run_training_process(
-                ctx,
-                event_dataset,
-                phase="本月活動菇模型",
-                model=promoted,
-                run_name=f"activity_{cycle}_{stamp}",
-                allow_resume=False,
-                require_completed=True,
-            )
-            event_best = Path(str(event_result["status"].get("checkpoint") or "")).resolve()
+            event_run = self.monthly_workflow.completed_training_run(config, cycle, "event")
+            if event_run is not None:
+                ctx.message("本月活動菇模型｜訓練已完成，正在接續模型登錄。")
+                event_best = event_run / "weights/best.pt"
+            else:
+                event_result = self._run_training_process(
+                    ctx,
+                    event_dataset,
+                    phase="本月活動菇模型",
+                    model=promoted,
+                    run_name=f"activity_{cycle}_{stamp}",
+                    allow_resume=True,
+                    require_completed=True,
+                )
+                event_best = Path(str(event_result["status"].get("checkpoint") or "")).resolve()
             if not event_best.is_file():
                 raise RuntimeError("活動菇模型訓練完成，但找不到 best.pt。")
             event_run = event_best.parent.parent
@@ -2070,10 +2237,14 @@ class AppRuntime:
                 self.monthly_workflow.update_manifest(
                     cycle, removed_event_model=str(removed_event)
                 )
+            removed_models = self.monthly_workflow.cleanup_superseded_models(
+                config, keep=(resident_best, event_best, promoted)
+            )
+            self.monthly_workflow.update_manifest(cycle, removed_superseded_models=removed_models)
             cleanup = self.monthly_workflow.cleanup_completed_cycle(
                 config,
                 cycle,
-                (resident_dataset, event_dataset),
+                tuple(path for path in (resident_dataset, event_dataset) if path is not None),
             )
             ctx.message("訓練完成；已自動清理可重建資料集、暫存素材與舊月份資料。")
             ArtifactManager(self.config()).refresh_catalog()
@@ -2096,8 +2267,34 @@ class AppRuntime:
         path = TrainingControl(TRAINING_CONTROL_DIR).request("pause")
         return {"requested": "pause", "path": str(path)}
 
+    def request_recognition_pause(self, job_id: str) -> JobRecord:
+        record = self.jobs.begin_recognition_pause(job_id)
+        def finish() -> None:
+            try:
+                self.jobs.await_recognition_pause(job_id)
+                self._finish_recognition_pause(job_id)
+            except Exception as exc:
+                with self.jobs._lock:
+                    current = self.jobs.get(job_id)
+                    if current.state == "running" and (current.paused or current.pause_requested):
+                        self.jobs.cancel_recognition_pause(job_id)
+                        self.jobs.update(job_id, message=f"無法完成暫停：{exc}")
+        threading.Thread(target=finish, name=f"pause-{job_id[:8]}", daemon=True).start()
+        return record
+
+    def cancel_pending_recognition_pause(self, job_id: str) -> JobRecord:
+        with self.jobs._lock:
+            record = self.jobs.get(job_id)
+            if not record.pause_requested or record.paused:
+                raise RuntimeError("目前沒有等待中的暫停要求。")
+            self.jobs.cancel_recognition_pause(job_id)
+            return self.jobs.update(job_id, message="已取消暫停要求，繼續目前工作。")
+
     def pause_recognition(self, job_id: str) -> JobRecord:
         self.jobs.pause_recognition(job_id)
+        return self._finish_recognition_pause(job_id)
+
+    def _finish_recognition_pause(self, job_id: str) -> JobRecord:
         try:
             current = self.device.status().get("current")
             if not isinstance(current, dict):
@@ -2109,28 +2306,31 @@ class AppRuntime:
         except Exception:
             self.jobs.cancel_recognition_pause(job_id)
             raise
-        message = "辨識已安全暫停；可按「重新開啟手機控制」在電腦上操作。"
-        if os.environ.get("BLOOMPILOT_DESKTOP") == "1":
-            try:
-                self.screen_control.open(serial)
-            except Exception as exc:
-                message = (
-                    "辨識已安全暫停，但手機滑鼠控制未能自動開啟："
-                    f"{str(exc).splitlines()[0]}。可按「重新開啟手機控制」再試。"
-                )
-            else:
-                message = (
-                    "辨識已安全暫停；手機滑鼠控制已開啟。"
-                    "可在電腦上點擊、拖曳與輸入，完成後回 BloomPilot 按「繼續辨識」。"
-                )
-        return self.jobs.update(
-            job_id,
-            paused=True,
-            resuming=False,
-            resume_coordinate=resume_coordinate,
-            resume_serial=serial,
-            message=message,
-        )
+        with self.jobs._lock:
+            if self.jobs.stop_event(job_id).is_set():
+                raise RuntimeError("工作已停止，不再開啟手機控制。")
+            message = "辨識已安全暫停；可按「重新開啟手機控制」在電腦上操作。"
+            if os.environ.get("BLOOMPILOT_DESKTOP") == "1":
+                try:
+                    self.screen_control.open(serial)
+                except Exception as exc:
+                    message = (
+                        "辨識已安全暫停，但手機滑鼠控制未能自動開啟："
+                        f"{str(exc).splitlines()[0]}。可按「重新開啟手機控制」再試。"
+                    )
+                else:
+                    message = (
+                        "辨識已安全暫停；手機滑鼠控制已開啟。"
+                        "可在電腦上點擊、拖曳與輸入，完成後回 BloomPilot 按「繼續辨識」。"
+                    )
+            return self.jobs.update(
+                job_id,
+                paused=True,
+                resuming=False,
+                resume_coordinate=resume_coordinate,
+                resume_serial=serial,
+                message=message,
+            )
 
     def open_screen_control(self, serial: str | None = None) -> dict[str, object]:
         selected = str(serial or self.device.serial).strip()

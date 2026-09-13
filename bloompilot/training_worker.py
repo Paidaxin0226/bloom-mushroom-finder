@@ -101,13 +101,26 @@ def main() -> int:
             flush=True,
         )
         print("正在載入 PyTorch／YOLO 並初始化訓練裝置…", flush=True)
+
+        def checkpoint_saved(trainer: object) -> None:
+            control.checkpoint_callback(trainer)
+            control.write_status(
+                "running", required=False,
+                dataset=str(dataset_dir),
+                completed_epoch=int(getattr(trainer, "epoch", -1)) + 1,
+                total_epochs=int(getattr(trainer, "epochs", plan["total_epochs"])),
+                checkpoint=str(Path(getattr(trainer, "last")).resolve()),
+                class_count=int(summary["class_count"]),
+                message="本輪 checkpoint 已保存，正在繼續訓練。",
+            )
+
         try:
             save_dir = train(
                 config,
                 dataset_dir,
                 allow_resume=not no_resume,
                 run_name=run_name,
-                callbacks={"on_model_save": control.checkpoint_callback},
+                callbacks={"on_model_save": checkpoint_saved},
             )
         except Exception as exc:
             if int(plan["workers"]) <= 0 or not is_dataloader_worker_failure(exc):
@@ -135,7 +148,7 @@ def main() -> int:
                 # with workers=0 instead of creating a colliding named run.
                 allow_resume=True,
                 run_name=None,
-                callbacks={"on_model_save": control.checkpoint_callback},
+                callbacks={"on_model_save": checkpoint_saved},
             )
         finished_epochs = completed_epochs(save_dir)
         control.write_status(

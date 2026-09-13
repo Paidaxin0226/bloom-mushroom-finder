@@ -13,6 +13,44 @@ import numpy as np
 from .paths import TRAINING_RUNS_DIR
 
 
+def filter_terrain_false_positives(
+    source: np.ndarray, detections: Sequence[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Reject the crystal model's blue-pond confusion before clicks/events.
+
+    Crystal sprites contain pale, low-saturation facets and warm stems. The
+    recorded false hits contain almost exclusively saturated blue water and
+    green land. Do not use confidence or box size: both overlap real targets.
+    """
+    from .map_targeting import TargetAlignmentError, target_crop
+
+    accepted = []
+    for detection in detections:
+        if str(detection.get("class_name", "")).lower() != "large_crystal":
+            accepted.append(detection)
+            continue
+        try:
+            crop = target_crop(source, detection)
+        except TargetAlignmentError:
+            continue
+        if not crop.size:
+            continue
+        hue, saturation, value = cv2.split(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV))
+        water = (hue >= 85) & (hue <= 115) & (saturation >= 80)
+        land = (hue >= 35) & (hue <= 85) & (saturation >= 80)
+        facets = (saturation < 80) & (value >= 100)
+        stems = (hue >= 12) & (hue < 35) & (saturation >= 55) & (value >= 100)
+        terrain_only = (
+            float(np.mean(water)) >= 0.25
+            and float(np.mean(water | land)) >= 0.90
+            and float(np.mean(facets)) < 0.055
+            and float(np.mean(stems)) < 0.012
+        )
+        if not terrain_only:
+            accepted.append(detection)
+    return accepted
+
+
 def newest_trained_model(root: Path = TRAINING_RUNS_DIR) -> Path | None:
     candidates = list(root.glob("*/weights/best.pt")) if root.is_dir() else []
     if not candidates:

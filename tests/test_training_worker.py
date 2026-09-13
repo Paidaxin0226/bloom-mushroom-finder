@@ -13,6 +13,38 @@ from bloompilot.training_worker import is_dataloader_worker_failure, main
 
 
 class TrainingWorkerFallbackTests(unittest.TestCase):
+    def test_each_saved_checkpoint_publishes_recoverable_progress(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            root = Path(temporary)
+            control = TrainingControl(root / "control")
+            args = SimpleNamespace(config=root / "config.yaml", dataset=root, control_dir=control.directory)
+
+            def train(_config, _dataset, **kwargs):
+                checkpoint = root / "weights/last.pt"
+                checkpoint.parent.mkdir()
+                checkpoint.write_bytes(b"saved")
+                kwargs["callbacks"]["on_model_save"](SimpleNamespace(epoch=4, epochs=100, last=checkpoint))
+                status = control.read_status()
+                self.assertEqual(status["completed_epoch"], 5)
+                self.assertEqual(status["checkpoint"], str(checkpoint.resolve()))
+                self.assertEqual(status["dataset"], str(root))
+                self.assertEqual(status["state"], "running")
+                return root
+
+            with (
+                patch("bloompilot.training_worker.build_parser", return_value=Mock(parse_args=lambda: args)),
+                patch("bloompilot.training_worker.load_config", return_value={}),
+                patch("bloompilot.training_worker.resolve_dataset", return_value=root),
+                patch("bloompilot.training_worker.generated_dataset_summary", return_value={"class_count": 14}),
+                patch("bloompilot.training_worker.describe_training_plan", return_value={
+                    "resume_checkpoint": None, "completed_epochs": 0, "total_epochs": 100, "workers": 4,
+                }),
+                patch("bloompilot.training_worker.ArtifactManager"),
+                patch("bloompilot.training_worker.train", side_effect=train),
+                patch("builtins.print"),
+            ):
+                self.assertEqual(main(), 0)
+
     def test_locked_progress_file_does_not_prevent_training(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
             root = Path(temporary)

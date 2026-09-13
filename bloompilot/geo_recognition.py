@@ -34,6 +34,7 @@ from .project_defaults import (
 from .viewport_geo import estimate_detection_coordinate
 from .route_coverage import coverage_radii_from_km
 from .memory_watchdog import PikminMemoryWatchdog
+from .detection import filter_terrain_false_positives
 from .phone_automation import (
     AdbClient,
     AutomationError,
@@ -247,6 +248,9 @@ class GeoSequenceSummary:
     stop_reason: str
     skipped_waypoints: int = 0
     skipped_points: int = 0
+    coordinate_recovery_count: int = 0
+    coordinate_recovery_seconds: float = 0.0
+    final_movement_message: str = ""
 
 
 def _current_coordinate(status: dict[str, object]) -> tuple[float, float] | None:
@@ -635,7 +639,7 @@ def run_geographic_recognition_sequence(
                                 live_filter.get("participant_count")
                             )
                     result = model.predict(frame, **frame_predict_args)[0]
-                    detections = detections_from_result(result)
+                    detections = filter_terrain_false_positives(frame, detections_from_result(result))
                     enrich_detections_with_badge_numbers(frame, detections)
                     detections = filter_detections_by_participant_count(
                         detections, frame_participant_count
@@ -657,7 +661,9 @@ def run_geographic_recognition_sequence(
                             enrich_detections_with_precise_coordinates(
                                 [detection], coordinate_resolver,
                                 reference_image=frame,
-                                detect_targets=lambda image: detections_from_result(model.predict(image, **recheck_args)[0]),
+                                detect_targets=lambda image: filter_terrain_false_positives(
+                                    image, detections_from_result(model.predict(image, **recheck_args)[0]),
+                                ),
                                 recover_map=lambda: restore_recognition_map(
                                     adb_client, memory_watchdog, point, stop_event=event,
                                     swipe_duration_ms=swipe_duration_ms, status=report,
@@ -865,6 +871,7 @@ def run_geographic_recognition_sequence(
                 left_radius, right_radius, up_radius, down_radius = waypoint.resolved_radii
                 return run_rectangular_scan(
                     adb_client,
+                    ensure_map=getattr(memory_watchdog, "ensure_scan_map", None),
                     horizontal_radius=waypoint.horizontal_radius,
                     vertical_radius=waypoint.vertical_radius,
                     left_radius=left_radius,
@@ -939,6 +946,9 @@ def run_geographic_recognition_sequence(
         stop_reason=stop_reason,
         skipped_waypoints=skipped_waypoints,
         skipped_points=skipped_points,
+        coordinate_recovery_count=coordinate_resolver.recovery_count if coordinate_resolver else 0,
+        coordinate_recovery_seconds=round(coordinate_resolver.recovery_seconds, 2) if coordinate_resolver else 0.0,
+        final_movement_message=str(final_movement.get("message", "")),
     )
     finished_at = datetime.now(timezone.utc)
     if not records_path.exists():
@@ -983,6 +993,10 @@ def run_geographic_recognition_sequence(
             "final_movement": final_movement,
             "skipped_waypoints": skipped_records,
             "matched_frames": matched_frames,
+            "coordinate_recovery": {
+                "count": coordinate_resolver.recovery_count if coordinate_resolver else 0,
+                "seconds": round(coordinate_resolver.recovery_seconds, 2) if coordinate_resolver else 0,
+            },
             "memory_watchdog": {
                 "enabled": True,
                 "restart_count": memory_watchdog.restart_count,

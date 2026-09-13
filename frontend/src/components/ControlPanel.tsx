@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { Coordinate, DeviceStatus } from '../types'
 import type { MapContextRequest } from './MapView'
 import { Icon } from './Icons'
+import { parseRouteText, validCoordinate } from '../utils/routeImport'
 import { ActionButton, Field, Toggle } from './Primitives'
 
 type Tab = 'location' | 'fitness' | 'apps' | 'connection'
@@ -29,11 +30,6 @@ const numberValue = (value: unknown, fallback: number) => typeof value === 'numb
 const boolValue = (value: unknown, fallback = false) => typeof value === 'boolean' ? value : fallback
 const stringValue = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback
 
-function validCoordinate(lat: string | number, lng: string | number): Coordinate | null {
-  const point = { lat: Number(lat), lng: Number(lng) }
-  return Number.isFinite(point.lat) && Number.isFinite(point.lng) && Math.abs(point.lat) <= 90 && Math.abs(point.lng) <= 180 ? point : null
-}
-
 function distanceMeters(points: Coordinate[]) {
   let total = 0
   for (let index = 1; index < points.length; index += 1) {
@@ -53,54 +49,6 @@ function downloadText(name: string, text: string, type = 'application/json') {
   anchor.download = name
   anchor.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-function collectJsonPoints(value: unknown, output: Coordinate[]) {
-  if (output.length >= 500) return
-  if (Array.isArray(value)) {
-    if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
-      const point = validCoordinate(value[1], value[0])
-      if (point) output.push(point)
-      return
-    }
-    value.forEach((item) => collectJsonPoints(item, output))
-    return
-  }
-  const item = asRecord(value)
-  if ('lat' in item && ('lng' in item || 'lon' in item)) {
-    const point = validCoordinate(item.lat as number, (item.lng ?? item.lon) as number)
-    if (point) output.push(point)
-    return
-  }
-  if ('coordinates' in item) collectJsonPoints(item.coordinates, output)
-  else if ('points' in item) collectJsonPoints(item.points, output)
-  else if ('route' in item) collectJsonPoints(item.route, output)
-  else if ('features' in item) collectJsonPoints(item.features, output)
-  else if ('geometry' in item) collectJsonPoints(item.geometry, output)
-}
-
-function parseRouteText(text: string, fileName: string): Coordinate[] {
-  const output: Coordinate[] = []
-  if (/\.(json|geojson)$/i.test(fileName)) {
-    collectJsonPoints(JSON.parse(text), output)
-  } else if (/\.(gpx|kml|xml)$/i.test(fileName)) {
-    const tagPattern = /<(?:trkpt|rtept|wpt)\b[^>]*?lat=["']([^"']+)["'][^>]*?(?:lon|lng)=["']([^"']+)["'][^>]*?>/gi
-    let match: RegExpExecArray | null
-    while ((match = tagPattern.exec(text)) && output.length < 500) {
-      const point = validCoordinate(match[1], match[2]); if (point) output.push(point)
-    }
-    const coordinateBlocks = [...text.matchAll(/<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi)]
-    coordinateBlocks.forEach((block) => block[1].trim().split(/\s+/).forEach((pair) => {
-      if (output.length >= 500) return
-      const [lng, lat] = pair.split(','); const point = validCoordinate(lat, lng); if (point) output.push(point)
-    }))
-  } else {
-    for (const match of text.matchAll(/(-?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)/g)) {
-      const point = validCoordinate(match[1], match[2]); if (point) output.push(point)
-      if (output.length >= 500) break
-    }
-  }
-  return output
 }
 
 function routeGpx(points: Coordinate[]) {
@@ -190,8 +138,9 @@ export default function ControlPanel({ status, selected, onSelectedChange, comma
   useEffect(() => { onDraftChange?.(draft) }, [draft, onDraftChange])
 
   useEffect(() => {
-    const key = `${status.serial || ''}:${Object.keys(settings).length}`
-    if (!status.connected || !Object.keys(settings).length || hydrated.current === key) return
+    if (!status.connected) { hydrated.current = ''; return }
+    const key = JSON.stringify([status.serial, settings])
+    if (!Object.keys(settings).length || hydrated.current === key) return
     hydrated.current = key
     setSpeed(numberValue(movementSettings.speedKmh, numberValue(status.speedKmh, 10.8)))
     setStraightLine(boolValue(movementSettings.straightLine, boolValue(status.straightLine)))

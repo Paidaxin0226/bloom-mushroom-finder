@@ -260,7 +260,7 @@ def validate_generation_config(config: dict[str, Any]) -> None:
         raise ValueError("square_size_pixels 必須大於 0 且不超過畫布短邊")
     if padding < 0 or padding * 2 >= square:
         raise ValueError("target_padding_pixels 必須小於正方形邊長的一半")
-    if minimum < 1 or maximum < minimum:
+    if minimum < 0 or maximum < minimum:
         raise ValueError("targets_per_image_min/max 設定不合法")
     probabilities = generation.get("target_count_probabilities")
     if probabilities is not None:
@@ -273,8 +273,8 @@ def validate_generation_config(config: dict[str, Any]) -> None:
                 weight = float(raw_weight)
             except (TypeError, ValueError) as exc:
                 raise ValueError("target_count_probabilities 的數量與權重必須是數字") from exc
-            if count < 1 or weight < 0:
-                raise ValueError("target 數量必須大於 0，權重不可小於 0")
+            if count < 0 or weight < 0:
+                raise ValueError("target 數量與權重不可小於 0；0 代表無目標背景")
             total_weight += weight
         if total_weight <= 0:
             raise ValueError("target_count_probabilities 至少要有一個大於 0 的權重")
@@ -513,6 +513,24 @@ def _new_run_paths(root: Path) -> tuple[Path, Path]:
     return staging, final
 
 
+def validate_target_sizes(targets: list[TargetAsset], generation: dict[str, Any]) -> None:
+    if not bool(generation.get("preserve_original_target_pixels", False)):
+        return
+    square = SQUARE_SIZE_PIXELS
+    padding = int(generation["target_padding_pixels"])
+    oversized = [
+        f"{asset.relative_path.as_posix()}（{asset.image.width}×{asset.image.height}px）"
+        for asset in targets
+        if max(asset.image.size) + padding * 2 > square
+    ]
+    if oversized:
+        raise RuntimeError(
+            f"原尺寸 target 加上留白後超過 {square}px 固定方框：{'、'.join(oversized[:5])}。"
+            f"目前每邊留白 {padding}px，target 寬高最多 {square - padding * 2}px；"
+            "請調整 target_padding_pixels 或使用較小的 target，程式不會自動縮放 target。"
+        )
+
+
 def generate_dataset(
     config: dict[str, Any],
     *,
@@ -553,21 +571,7 @@ def generate_dataset(
     if not targets:
         raise RuntimeError("data/source/targets 中找不到具有透明背景的 target 圖片")
     class_names, class_ids = build_class_registry(targets)
-    if bool(generation.get("preserve_original_target_pixels", False)):
-        square = int(generation["square_size_pixels"])
-        padding = int(generation["target_padding_pixels"])
-        oversized = [
-            asset.relative_path.as_posix()
-            for asset in targets
-            if asset.image.width + padding * 2 > square
-            or asset.image.height + padding * 2 > square
-        ]
-        if oversized:
-            names = "、".join(oversized[:5])
-            raise RuntimeError(
-                f"原尺寸 target 加上留白後超過 {square}px 固定方框：{names}。"
-                "請使用能放入固定 256px 方框的 target；程式不會自動縮放 target。"
-            )
+    validate_target_sizes(targets, generation)
     if limit_backgrounds is not None:
         if limit_backgrounds < 1:
             raise ValueError("--limit-backgrounds 必須大於 0")
@@ -677,7 +681,7 @@ def generate_dataset(
                 )
             labels = [yolo_label(box, width, height) for box in boxes]
             (staging / label_relative).write_text(
-                "\n".join(labels) + "\n",
+                "".join(label + "\n" for label in labels),
                 encoding="utf-8",
             )
 
@@ -771,6 +775,7 @@ def generate_dataset(
         "target_count": len(targets),
         "class_count": len(class_names),
         "class_names": class_names,
+        "negative_image_count": completed - len({row["image"] for row in annotation_rows}),
         "target_pixel_sizes": {
             asset.relative_path.as_posix(): [asset.image.width, asset.image.height]
             for asset in targets

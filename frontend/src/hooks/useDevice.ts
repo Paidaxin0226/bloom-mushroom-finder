@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../services/api'
-import type { AdbDevice, DeviceStatus, ServerEvent } from '../types'
+import type { AdbDevice, DeviceStatus, PhoneState, ServerEvent } from '../types'
+import { newerPhoneState, visibleDeviceStatus } from '../utils/phoneState'
 
 const LAST_USB_DEVICE_KEY = 'bloompilot.lastUsbDevice'
 
@@ -24,6 +25,7 @@ function automaticDevice(devices: AdbDevice[]): AdbDevice | undefined {
 export function useDevice(subscribe: (handler: (event: ServerEvent) => void) => () => void) {
   const [devices, setDevices] = useState<AdbDevice[]>([])
   const [status, setStatus] = useState<DeviceStatus>({ connected: false })
+  const [phone, setPhone] = useState<PhoneState>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -39,6 +41,37 @@ export function useDevice(subscribe: (handler: (event: ServerEvent) => void) => 
     try { setStatus(await api.getDeviceStatus()) }
     catch { setStatus((previous) => ({ ...previous, connected: false })) }
   }, [])
+
+  const observedSerial = status.serial || lastUsbDevice()
+  useEffect(() => {
+    if (!observedSerial) return
+    let cancelled = false
+    let timer: number
+    const poll = async () => {
+      try {
+        const next = await api.getPhoneState(observedSerial)
+        if (!cancelled) setPhone((previous) => newerPhoneState(previous, next))
+      } catch {
+        if (!cancelled) setPhone({ serial: observedSerial, adb_state: 'unknown', screen_state: 'unknown', locked: null, battery_percent: null, power_connected: null, checked_at: new Date().toISOString(), error: '手機狀態查詢失敗，正在重新確認。' })
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 5000)
+    }
+    void poll()
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [observedSerial])
+
+  const wake = useCallback(async () => {
+    if (!observedSerial) return
+    setBusy(true)
+    setError(null)
+    try {
+      const next = await api.wakePhone(observedSerial)
+      setPhone((previous) => newerPhoneState(previous, next))
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally { setBusy(false) }
+  }, [observedSerial, refresh])
 
   const connect = useCallback(async (serial: string) => {
     setBusy(true)
@@ -135,5 +168,7 @@ export function useDevice(subscribe: (handler: (event: ServerEvent) => void) => 
     }
   }, [status.connected, refresh])
 
-  return { devices, status, busy, error, scan, refresh, connect, disconnect, command }
+  const currentPhone = phone?.serial === observedSerial ? phone : status.phone
+  const visibleStatus = visibleDeviceStatus(status, currentPhone)
+  return { devices, status: visibleStatus, busy, error, scan, refresh, connect, disconnect, command, wake }
 }
