@@ -1,0 +1,1 @@
+resident_2026-09_20260912_002014/weights/best.pt

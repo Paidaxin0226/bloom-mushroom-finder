@@ -19,6 +19,9 @@ from bloompilot.web.runtime import AppRuntime
 
 class MonthlyTrainingResumeTests(unittest.TestCase):
     def setUp(self) -> None:
+        publisher = patch("bloompilot.training_retention.publish_completed_model")
+        publisher.start()
+        self.addCleanup(publisher.stop)
         self.temporary = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

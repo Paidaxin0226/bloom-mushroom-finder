@@ -154,11 +154,24 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
             datasets.append(dataset)
         (self.root / "data/generated/LATEST.txt").write_text("event\n", encoding="utf-8")
 
-        result = self.store.cleanup_completed_cycle(self.config, "2026-09", datasets)
+        from bloompilot.training_retention import background_snapshot
+        for role, dataset in zip(("resident", "event"), datasets):
+            run = self.root / "outputs/training" / role
+            (run / "weights").mkdir(parents=True)
+            (run / "weights/best.pt").write_bytes(b"model")
+            (run / ".artifact.json").write_text(json.dumps({
+                "status": "completed", "dataset": str(dataset),
+                "monthly_workflow": {"cycle": "2026-09", "role": role},
+            }))
+            self.store.update_manifest("2026-09", **{f"{role}_training_run": str(run)})
+        self.store.update_manifest("2026-09", completed_at="2026-09-13", background_snapshot=background_snapshot([current_background], self.root))
+        with patch("bloompilot.training_retention.publish_completed_model") as publish:
+            result = self.store.cleanup_completed_cycle(self.config, "2026-09", datasets)
+        self.assertEqual(publish.call_count, 2)
 
         self.assertEqual(len(result["datasets"]), 2)
-        self.assertFalse(old_cycle.exists())
-        self.assertTrue(current_background.exists())
+        self.assertTrue(old_cycle.exists())  # An unfinished older cycle is resumable.
+        self.assertFalse(current_background.exists())
         self.assertFalse((self.root / "data/generated/LATEST.txt").exists())
         self.assertIsNotNone(self.store.status("2026-09")["intermediates_cleaned_at"])
 
@@ -315,6 +328,8 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
         event_best.parent.mkdir(parents=True)
         resident_best.write_bytes(b"strengthened-resident")
         event_best.write_bytes(b"monthly-event")
+        for best, dataset in zip((resident_best, event_best), datasets):
+            (best.parent.parent / ".artifact.json").write_text(json.dumps({"status": "completed", "dataset": str(dataset)}))
 
         runtime = AppRuntime()
         runtime.monthly_workflow = self.store
@@ -330,6 +345,7 @@ class MonthlyWorkflowStoreTests(unittest.TestCase):
             {"status": {"state": "completed", "checkpoint": str(event_best)}},
         ]
         with (
+            patch("bloompilot.training_retention.publish_completed_model"),
             patch.object(self.store, "dataset_config", return_value=self.config),
             patch.object(runtime, "config", return_value=self.config),
             patch.object(runtime.jobs, "start", side_effect=lambda _kind, runner: runner(context)),

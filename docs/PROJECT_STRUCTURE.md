@@ -11,6 +11,7 @@
 | `data/source/backgrounds/` | 依城市分類的原始背景 | 否 | 不提交或使用 Git LFS |
 | `data/source/targets/` | 透明辨識目標與參考素材 | 否 | 不提交或使用 Git LFS |
 | `data/generated/` | 合成圖片、標註、預覽與 NPY cache | 是 | 不提交 |
+| `models/published/` | 完成模型、SHA-256、預設與常駐指標 | 自動發布、執行期不刪除 | 提交 |
 | `models/pretrained/` | 下載或提供的起始權重 | 可重新取得 | 不提交或使用 Git LFS |
 | `outputs/training/` | checkpoint、指標與訓練圖表 | 否 | 不提交；另行備份重要 run |
 | `outputs/recognition/` | 自動巡圖命中原圖、標框圖與 JSON 紀錄 | 否 | 不提交；按需要備份 |
@@ -70,7 +71,7 @@
 - Dataset ID 格式為 `dataset:<目錄名>`。
 - Training run ID 格式為 `run:<目錄名>`。
 - 模型 ID 分為 `model:pretrained:<檔名>` 與 `model:trained:<run>:<best|last>`。
-- `LATEST.txt` 與 `LATEST_RUN.txt` 只儲存管理根目錄內的相對路徑；模型不再建立 latest 權重或模型指標。
+- `LATEST.txt` 與 `LATEST_RUN.txt` 只儲存管理根目錄內的相對路徑；發布模型另有可攜的 `models/published/DEFAULT.txt` 與 `RESIDENT.txt`。
 - Dataset 正在產生或被 training run 參照時會標為受保護。
 - Running、paused 與 resumable training run 會標為受保護。
 - `training.model` 指定的預訓練模型受保護；快取清理只允許處理 dataset 內的 `.npy` 與 `.cache`。
@@ -82,7 +83,7 @@
 - Completed run 的 `epoch*.pt` 與 `last.pt` 會清除。
 - Running、paused、stopped、resumable 或無明確狀態的 run 不會自動刪除權重。
 
-手機辨識的預設模型保存在 `runtime/phone_automation/settings.json` 的 `recognition_default_model`，只記錄專案相對路徑，不複製 `.pt`。每月活動流程成功後會自動清理可重建 dataset、上個月工作區與已被取代的月度模型。
+手機辨識的預設模型保存在 `runtime/phone_automation/settings.json` 的 `recognition_default_model`，只記錄專案相對路徑，不複製 `.pt`。沒有本機設定時使用已提交的 DEFAULT 指標。一般訓練成功發布模型後清理該輪 dataset 與已使用背景；月度流程等兩階段成功再清理。已發布模型受保護。
 
 ## 素材選取生成
 

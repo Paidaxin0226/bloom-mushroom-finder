@@ -177,16 +177,20 @@ class MonthlyWorkflowStore:
         return normalized
 
     def resident_model(self) -> Path | None:
+        from .artifacts import read_pointer
         raw = self._state().get("resident_model")
-        if not isinstance(raw, str) or not raw.strip():
-            return None
-        path = Path(raw)
-        path = path if path.is_absolute() else self.project_root / path
-        path = path.resolve()
-        return path if path.is_file() and path.suffix.casefold() == ".pt" else None
+        if isinstance(raw, str) and raw.strip():
+            path = Path(raw)
+            path = (path if path.is_absolute() else self.project_root / path).resolve()
+            if path.is_file() and path.suffix.casefold() == ".pt":
+                return path
+        root = self.project_root / "models/published"
+        return read_pointer(root / "RESIDENT.txt", root)
 
     def resident_metadata(self) -> dict[str, Any]:
-        return _read_json(self.resident_root / "metadata.json")
+        metadata = _read_json(self.resident_root / "metadata.json")
+        model = self.resident_model()
+        return metadata or (_read_json(model.parent.parent / ".artifact.json") if model else {})
 
     def set_resident_model(
         self,
@@ -344,6 +348,8 @@ class MonthlyWorkflowStore:
         if not monthly:
             raise ValueError("當月沒有可用的已核准背景。")
 
+        from .training_retention import background_snapshot
+        source_snapshot = background_snapshot(baseline + monthly, self.project_root)
         bundle = self.cycle_dir(cycle) / "training_backgrounds"
         temporary = self.cycle_dir(cycle) / f".training_backgrounds.{os.getpid()}.building"
         with self._lock:
@@ -370,6 +376,7 @@ class MonthlyWorkflowStore:
                     shutil.rmtree(temporary)
         self.update_manifest(
             cycle,
+            background_snapshot=source_snapshot,
             background_policy="clean_baseline_plus_current_month",
             baseline_background_count=len(baseline),
             monthly_background_count=len(monthly),
@@ -388,8 +395,34 @@ class MonthlyWorkflowStore:
         cycle: str,
         datasets: Iterable[Path],
     ) -> dict[str, Any]:
-        """Remove rebuildable monthly data and previous monthly workspaces."""
+        """Remove inputs only after both stages have durable, validated weights."""
+        from .training_retention import publish_completed_model, remove_backgrounds
         cycle = validate_cycle(cycle)
+        manifest = self.manifest(cycle)
+        from .artifacts import ArtifactManager
+        manager = ArtifactManager(config)
+        runs = []
+        for role in ("resident", "event"):
+            raw = manifest.get(f"{role}_training_run")
+            if not manifest.get("completed_at") or not raw:
+                raise ValueError("月度兩階段尚未全部完成；保留背景與資料集。")
+            run = manager._safe_run(self.project_root / raw)
+            artifact = _read_json(run / ".artifact.json")
+            stage = artifact.get("monthly_workflow", {})
+            if artifact.get("status") != "completed" or stage.get("cycle") != cycle or stage.get("role") != role:
+                raise ValueError("月度模型狀態或階段不符；保留背景與資料集。")
+            runs.append(run)
+        for run in runs:
+            publish_completed_model(config, run)
+        datasets = [path.resolve() for path in datasets]
+        registered = {(self.project_root / _read_json(run / ".artifact.json")["dataset"]).resolve() for run in runs}
+        if any(path not in registered or path == manager.dataset_root or not path.is_relative_to(manager.dataset_root) or not path.is_relative_to(self.project_root) for path in datasets):
+            raise ValueError("月度資料集與已完成模型紀錄不符，拒絕清理。")
+        for artifact in manager.scan(reconcile=False):
+            dependency = artifact.details.get("dataset")
+            if artifact.kind == "training_run" and artifact.status != "completed" and dependency and (self.project_root / dependency).resolve() in datasets:
+                return {"datasets": [], "intermediates": [], "cycles": [], "retained": "dataset_needed_by_incomplete_run"}
+        backgrounds = remove_backgrounds(config, manifest.get("background_snapshot", []), excluding=set(datasets))
         generated_root = self._configured_path(config, "generated_root", "data/generated")
         removed_datasets: list[str] = []
         for value in datasets:
@@ -420,15 +453,6 @@ class MonthlyWorkflowStore:
                 removed_intermediates.append(str(candidate))
 
         removed_cycles: list[str] = []
-        if self.workspace_root.is_dir():
-            for candidate in self.workspace_root.iterdir():
-                if (
-                    candidate.is_dir()
-                    and candidate.name != cycle
-                    and _CYCLE_RE.fullmatch(candidate.name)
-                ):
-                    shutil.rmtree(candidate)
-                    removed_cycles.append(candidate.name)
 
         self.update_manifest(
             cycle,
@@ -438,6 +462,7 @@ class MonthlyWorkflowStore:
             removed_previous_cycles=removed_cycles,
         )
         return {
+            "backgrounds": backgrounds,
             "datasets": removed_datasets,
             "intermediates": removed_intermediates,
             "cycles": removed_cycles,

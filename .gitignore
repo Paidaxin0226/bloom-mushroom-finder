@@ -83,3 +83,16 @@ signing.properties
 *.backup
 .DS_Store
 Thumbs.db
+
+# Completed, verified models travel with a normal clone. Intermediate weights
+# and private training data remain ignored; only the published layout is allowed.
+!/models/
+/models/*
+!/models/published/
+/models/published/**
+!/models/published/**/
+!/models/published/**/best.pt
+!/models/published/**/.artifact.json
+!/models/published/DEFAULT.txt
+!/models/published/RESIDENT.txt
+!/models/published/README.md

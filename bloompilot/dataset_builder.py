@@ -577,6 +577,8 @@ def generate_dataset(
             raise ValueError("--limit-backgrounds 必須大於 0")
         backgrounds = backgrounds[:limit_backgrounds]
 
+    from .training_retention import background_snapshot
+    source_snapshot = background_snapshot([item.path for item in backgrounds], Path(active_config["_project_root"]))
     city_names = sorted({item.city for item in backgrounds})
     log(
         f"找到 {len(backgrounds)} 張背景（{', '.join(city_names)}）與 "
@@ -788,6 +790,7 @@ def generate_dataset(
         "square_size_pixels": int(generation["square_size_pixels"]),
         "output_size": [width, height],
         "generation_config": generation,
+        "background_snapshot": source_snapshot,
         "source_selection": {
             "backgrounds": [asset.relative_path.as_posix() for asset in backgrounds],
             "targets": [asset.relative_path.as_posix() for asset in targets],

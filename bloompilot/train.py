@@ -497,6 +497,9 @@ def train(
             total_epochs=int(training["epochs"]),
         )
         manager.refresh_catalog()
+        if config.get("artifacts", {}).get("auto_cleanup_training_data", True):
+            from .training_retention import finalize_training
+            finalize_training(config, save_dir, dataset_dir)
         print(f"續訓完成：{save_dir}", flush=True)
         print(f"最佳權重：{save_dir / 'weights' / 'best.pt'}", flush=True)
         return save_dir
@@ -544,6 +547,9 @@ def train(
         total_epochs=int(training["epochs"]),
     )
     manager.refresh_catalog()
+    if config.get("artifacts", {}).get("auto_cleanup_training_data", True):
+        from .training_retention import finalize_training
+        finalize_training(config, save_dir, dataset_dir)
     print(f"訓練完成：{save_dir}", flush=True)
     print(f"最佳權重：{save_dir / 'weights' / 'best.pt'}", flush=True)
     return save_dir

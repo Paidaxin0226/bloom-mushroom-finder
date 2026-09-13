@@ -51,7 +51,7 @@ BACKGROUND_TOWNS = (
 
 
 def build_monthly_background_route(background_root: Path) -> dict[str, Any]:
-    """Create a route containing exactly the towns present in the source dataset."""
+    """Use source towns when available, or the built-in towns after input cleanup."""
     available = {
         path.name.casefold()
         for path in background_root.iterdir()
@@ -63,7 +63,7 @@ def build_monthly_background_route(background_root: Path) -> dict[str, Any]:
     if unknown:
         raise ValueError("背景資料集包含尚未設定座標的城鎮：" + "、".join(unknown))
     if not selected:
-        raise ValueError("目前背景資料集沒有可建立路線的城鎮。")
+        selected = list(BACKGROUND_TOWNS)
 
     waypoints: list[dict[str, Any]] = []
     for town in selected:

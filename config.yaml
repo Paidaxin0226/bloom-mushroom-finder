@@ -132,3 +132,6 @@ artifacts:
   # Completed runs keep their original best.pt without creating a latest-model
   # copy. Paused/resumable runs retain last.pt until they are completed.
   auto_prune_completed_weights: true
+  # Publish verified completed weights, then remove their datasets/backgrounds.
+  # Monthly training defers input cleanup until both stages have succeeded.
+  auto_cleanup_training_data: true

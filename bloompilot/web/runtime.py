@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 import yaml
 
-from ..artifacts import ArtifactManager
+from ..artifacts import ArtifactManager, read_pointer
 from ..dataset_builder import discover_targets, generate_dataset, load_config, validate_target_sizes
 from ..device_control import DeviceControlError, UsbDeviceController
 from ..discord_webhook import (
@@ -1433,25 +1433,29 @@ class AppRuntime:
 
     @staticmethod
     def _trained_model_paths(manager: ArtifactManager) -> list[Path]:
-        root = manager.training_root
-        return sorted(
-            {
-                path.resolve()
-                for path in root.glob("*/weights/*.pt")
-                if path.is_file() and path.resolve().is_relative_to(root)
-            },
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )
+        published_root = manager.project_root / "models/published"
+        published = {p.resolve() for p in published_root.glob("*/weights/best.pt")
+                     if p.is_file() and p.resolve().is_relative_to(published_root)}
+        names = {p.parent.parent.name for p in published}
+        local = {p.resolve() for p in manager.training_root.glob("*/weights/*.pt")
+                 if p.is_file() and p.resolve().is_relative_to(manager.training_root)
+                 and not (p.name == "best.pt" and p.parent.parent.name in names)}
+        return sorted(published | local, key=lambda item: item.stat().st_mtime, reverse=True)
 
     @staticmethod
     def _stored_default_model(manager: ArtifactManager, paths: list[Path]) -> Path | None:
+        root = manager.project_root / "models/published"
         value = load_studio_settings().get("recognition_default_model")
-        if not isinstance(value, str) or not value.strip():
-            return None
-        candidate = Path(value)
-        candidate = candidate if candidate.is_absolute() else manager.project_root / candidate
-        candidate = candidate.resolve()
+        if isinstance(value, str) and value.strip():
+            candidate = Path(value)
+            candidate = (candidate if candidate.is_absolute() else manager.project_root / candidate).resolve()
+            if candidate in paths:
+                return candidate
+            if candidate.is_relative_to(manager.training_root):
+                published = (root / candidate.relative_to(manager.training_root)).resolve()
+                if published in paths:
+                    return published
+        candidate = read_pointer(root / "DEFAULT.txt", root)
         return candidate if candidate in paths else None
 
     def models(self) -> list[dict[str, Any]]:
@@ -1492,8 +1496,10 @@ class AppRuntime:
             requested = Path(model_path)
             requested = requested if requested.is_absolute() else manager.project_root / requested
             requested = requested.resolve()
+            if requested not in paths and requested.is_relative_to(manager.training_root):
+                requested = (manager.project_root / "models/published" / requested.relative_to(manager.training_root)).resolve()
             if requested not in paths:
-                raise ValueError("預設模型只能選擇專案 outputs/training 內已訓練的模型")
+                raise ValueError("預設模型只能選擇專案內已訓練或已發布的模型")
             settings = fixed_studio_settings(load_studio_settings())
             settings["recognition_default_model"] = requested.relative_to(manager.project_root).as_posix()
             save_studio_settings(settings)
@@ -2246,7 +2252,7 @@ class AppRuntime:
                 cycle,
                 tuple(path for path in (resident_dataset, event_dataset) if path is not None),
             )
-            ctx.message("訓練完成；已自動清理可重建資料集、暫存素材與舊月份資料。")
+            ctx.message("訓練完成；模型已發布，背景與資料集已依保留政策處理。")
             ArtifactManager(self.config()).refresh_catalog()
             self.hub.publish({"type": "monthly_workflow_update", "cycle": cycle})
             return {
