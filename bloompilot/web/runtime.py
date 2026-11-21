@@ -2327,7 +2327,7 @@ class AppRuntime:
                 else:
                     message = (
                         "辨識已安全暫停；手機滑鼠控制已開啟。"
-                        "可在電腦上點擊、拖曳與輸入，完成後回 BloomPilot 按「繼續辨識」。"
+                        "可在電腦上點擊、拖曳與輸入，完成後回 Bloom Mushroom Finder 按「繼續辨識」。"
                     )
             return self.jobs.update(
                 job_id,

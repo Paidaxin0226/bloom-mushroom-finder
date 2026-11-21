@@ -142,7 +142,7 @@ if ($actualCertificate -ne $expectedCertificate) {
 
 $releaseDir = Join-Path $repo "release-assets"
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$target = Join-Path $releaseDir "BloomPilot-Android-$versionName.apk"
+$target = Join-Path $releaseDir "BloomMushroomFinder-Android-$versionName.apk"
 Copy-Item -LiteralPath $builtApk -Destination $target -Force
 
 $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $target

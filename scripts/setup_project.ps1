@@ -89,7 +89,7 @@ function Install-ProjectScrcpy {
     }
 
     Write-Host "Downloading the official scrcpy Windows x64 package..." -ForegroundColor Cyan
-    $Headers = @{ "User-Agent" = "BloomPilot-UV-Setup" }
+    $Headers = @{ "User-Agent" = "BloomMushroomFinder-UV-Setup" }
     $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/Genymobile/scrcpy/releases/latest" -Headers $Headers
     $Asset = $Release.assets | Where-Object { $_.name -match '^scrcpy-win64-v[0-9.]+\.zip$' } | Select-Object -First 1
     if (-not $Asset) { throw "No Windows x64 scrcpy ZIP was found in the latest release." }
@@ -168,4 +168,4 @@ finally {
     Pop-Location
 }
 
-Write-Host "Double-click 啟動BloomPilot控制中心.bat to open the Electron desktop UI." -ForegroundColor Green
+Write-Host "Double-click 啟動BloomMushroomFinder控制中心.bat to open the Electron desktop UI." -ForegroundColor Green

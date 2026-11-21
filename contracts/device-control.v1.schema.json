@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bloompilot.local/contracts/device-control.v1.schema.json",
-  "title": "BloomPilot device control protocol v1",
+  "title": "Bloom Mushroom Finder device control protocol v1",
   "oneOf": [
     { "$ref": "#/$defs/pairRequest" },
     { "$ref": "#/$defs/commandRequest" },

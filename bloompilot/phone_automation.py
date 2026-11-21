@@ -475,7 +475,7 @@ class AdbClient:
             last_detail = detail or last_detail
             time.sleep(0.5)
         raise AutomationError(
-            "ADB 雙指縮小失敗；請安裝最新版 BloomPilot Android app。"
+            "ADB 雙指縮小失敗；請安裝最新版 Bloom Mushroom Finder Android app。"
             f" Android 回應：{last_detail}"
         )
 

@@ -1,6 +1,6 @@
-# BloomPilot Control Center
+# Bloom Mushroom Finder Control Center
 
-BloomPilot 的 Windows 控制中心統一使用 Electron + React/TypeScript；Python FastAPI 後端只負責裝置、工作與資料 API，不依賴 Tkinter。
+Bloom Mushroom Finder 的 Windows 控制中心統一使用 Electron + React/TypeScript；Python FastAPI 後端只負責裝置、工作與資料 API，不依賴 Tkinter。
 
 ## 啟動
 
@@ -9,10 +9,10 @@ BloomPilot 的 Windows 控制中心統一使用 Electron + React/TypeScript；Py
 .\安裝環境.bat
 
 # Electron UI
-.\啟動BloomPilot控制中心.bat
+.\啟動BloomMushroomFinder控制中心.bat
 
 # 快速驗證環境
-.\啟動BloomPilot控制中心.bat --check
+.\啟動BloomMushroomFinder控制中心.bat --check
 
 ```
 
@@ -35,7 +35,7 @@ BloomPilot 的 Windows 控制中心統一使用 Electron + React/TypeScript；Py
 1. 安裝 `android/` 產出的簽名 release APK。
 2. 手機以 USB 連接電腦並允許 USB 偵錯。
 3. 開啟 Android App；「電腦 USB 控制」會自動啟動，不需要再到「連線」頁手動開啟。
-4. Android 系統授權這台電腦進行 USB 偵錯後，BloomPilot 啟動時會優先自動連接上次成功使用的手機；若沒有紀錄且只有一台可用手機，也會直接連接並透過 ADB 自動啟動手機端 USB 控制通道。只有同時出現多台且尚未選過時才需要在左側手動選擇。
+4. Android 系統授權這台電腦進行 USB 偵錯後，Bloom Mushroom Finder 啟動時會優先自動連接上次成功使用的手機；若沒有紀錄且只有一台可用手機，也會直接連接並透過 ADB 自動啟動手機端 USB 控制通道。只有同時出現多台且尚未選過時才需要在左側手動選擇。
 
 通道使用 ADB dynamic forward 連到 Android local-abstract socket，不開放 LAN port。座標序列執行期間每 15 秒傳送一次輕量狀態心跳；若 Windows、ADB 或手機暫時重設通道，會自動重建 forward、重新配對並重送目前控制指令一次。新版 Android 服務也不再因辨識期間只有截圖／滑動、控制通道閒置 45 秒而主動斷線。
 

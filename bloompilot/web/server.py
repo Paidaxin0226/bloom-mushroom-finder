@@ -92,7 +92,7 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
         app_runtime.close()
 
     app = FastAPI(
-        title="BloomPilot Desktop API",
+        title="Bloom Mushroom Finder Desktop API",
         version=__version__,
         lifespan=lifespan,
     )
@@ -114,7 +114,7 @@ def create_app(runtime: AppRuntime | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "name": "BloomPilot",
+            "name": "Bloom Mushroom Finder",
             "version": __version__,
             "project_root": str(PROJECT_ROOT),
         }
@@ -568,7 +568,7 @@ app = create_app()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="BloomPilot Electron desktop API")
+    parser = argparse.ArgumentParser(description="Bloom Mushroom Finder Electron desktop API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18777)
     return parser
@@ -577,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.host not in {"127.0.0.1", "localhost"}:
-        raise SystemExit("BloomPilot desktop API 只允許綁定 loopback。")
+        raise SystemExit("Bloom Mushroom Finder desktop API 只允許綁定 loopback。")
     configure_diagnostics()
     server = uvicorn.Server(uvicorn.Config(
         app,

@@ -1,4 +1,4 @@
-"""Fixed parameters for the dedicated BloomPilot capture/training workflow."""
+"""Fixed parameters for the dedicated Bloom Mushroom Finder capture/training workflow."""
 
 from typing import Any
 INFERENCE_IMAGE_SIZE = 1024

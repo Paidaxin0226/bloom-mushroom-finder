@@ -230,13 +230,13 @@ def build_discord_hit_payload(
             "fields": fields,
             "color": color,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "footer": {"text": f"BloomPilot · {_MODE_LABELS.get(job_kind, '目標辨識')}" + (f" · {source[:100]}" if source else "")},
+            "footer": {"text": f"Bloom Mushroom Finder · {_MODE_LABELS.get(job_kind, '目標辨識')}" + (f" · {source[:100]}" if source else "")},
         })
     count = len(detections)
     suffix = f"（顯示前 {len(visible)} 筆）" if count > len(visible) else ""
     return {
-        "username": "BloomPilot",
-        "content": f"🎯 BloomPilot 即時命中：{count} 筆{suffix}",
+        "username": "Bloom Mushroom Finder",
+        "content": f"🎯 Bloom Mushroom Finder 即時命中：{count} 筆{suffix}",
         "embeds": embeds,
         "allowed_mentions": {"parse": []},
     }
@@ -244,7 +244,7 @@ def build_discord_hit_payload(
 
 def build_discord_test_payload() -> dict[str, Any]:
     payload = build_discord_hit_payload("screen_recognition", {}, [{"class_name": "測試播報", "confidence": 0.98, "participant_count": 0}])
-    payload["content"] = "✅ BloomPilot Discord 即時命中播報測試成功。"
+    payload["content"] = "✅ Bloom Mushroom Finder Discord 即時命中播報測試成功。"
     payload["embeds"][0]["title"] = "✅ Discord 播報已連線"
     payload["embeds"][0]["description"] = "這是測試訊息，並非實際命中。\n實際命中會附上目標裁切圖片與可用的座標連結。"
     return payload
@@ -281,7 +281,7 @@ def build_discord_hit_messages(job_kind: str, location: object, detections: Sequ
             files.append(attachment)
             embed["image"] = {"url": f"attachment://{attachment.filename}"}
         if len(detections) > _HITS_PER_MESSAGE:
-            payload["content"] = f"🎯 BloomPilot 即時命中：共 {len(detections)} 筆（第 {offset + 1}–{offset + len(batch)} 筆）"
+            payload["content"] = f"🎯 Bloom Mushroom Finder 即時命中：共 {len(detections)} 筆（第 {offset + 1}–{offset + len(batch)} 筆）"
         yield payload, files
 
 
@@ -292,7 +292,7 @@ def _request_body(payload: Mapping[str, Any], files: Sequence[DiscordAttachment]
     encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if not files:
         return encoded, "application/json"
-    boundary = f"BloomPilot{uuid.uuid4().hex}"
+    boundary = f"BloomMushroomFinder{uuid.uuid4().hex}"
     parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n'.encode(), encoded, b"\r\n"]
     for index, item in enumerate(files):
         parts.extend([
@@ -312,7 +312,7 @@ def discord_request(
     timeout: float = 8.0,
 ) -> Any:
     body, content_type = _request_body(payload, files) if payload is not None else (None, "application/json")
-    headers = {"Content-Type": content_type, "User-Agent": "BloomPilot/0.2"}
+    headers = {"Content-Type": content_type, "User-Agent": "BloomMushroomFinder/0.2"}
     if bot_token:
         headers["Authorization"] = f"Bot {bot_token}"
     request = Request(url, data=body, method="GET" if payload is None else "POST", headers=headers)
@@ -387,7 +387,7 @@ class DiscordWebhookNotifier:
                 return
             self._thread = threading.Thread(
                 target=self._run,
-                name="BloomPilotDiscord",
+                name="BloomMushroomFinderDiscord",
                 daemon=True,
             )
             self._thread.start()

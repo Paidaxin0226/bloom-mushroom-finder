@@ -173,7 +173,7 @@ class ScrcpyControlWindow:
                 "--max-fps=30",
                 "--video-bit-rate=8M",
                 "--stay-awake",
-                "--window-title=BloomPilot 手機滑鼠控制",
+                "--window-title=Bloom Mushroom Finder 手機滑鼠控制",
             ]
             try:
                 process = subprocess.Popen(

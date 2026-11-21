@@ -1,6 +1,6 @@
 # Pikmin Bloom 全球城市搜尋路線
 
-`pikmin_all_25012_cities.json` 是可直接匯入 BloomPilot「座標序列」的完整合併路線。`popular/*.json` 與 `less_known/*.json` 則保留為兩個分類版本；`index.json` 是完整索引，不是搜尋序列。
+`pikmin_all_25012_cities.json` 是可直接匯入 Bloom Mushroom Finder「座標序列」的完整合併路線。`popular/*.json` 與 `less_known/*.json` 則保留為兩個分類版本；`index.json` 是完整索引，不是搜尋序列。
 
 ## 內容
 

@@ -30,7 +30,7 @@ async function fetchWithRetry(url: string, options: RequestInit, attempts: numbe
       if (index + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, Math.min(400 + index * 250, 1800)))
     }
   }
-  throw lastError ?? new Error('BloomPilot API unavailable')
+  throw lastError ?? new Error('Bloom Mushroom Finder API unavailable')
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {

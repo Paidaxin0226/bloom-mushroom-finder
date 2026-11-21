@@ -90,7 +90,7 @@ public final class UsbControlService extends Service {
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
             CHANNEL_ID,
-            "BloomPilot USB 控制",
+            "Bloom Mushroom Finder USB 控制",
             NotificationManager.IMPORTANCE_LOW
         );
         channel.setDescription("保持使用者啟動的 USB 電腦控制通道");
@@ -113,7 +113,7 @@ public final class UsbControlService extends Service {
         );
         return new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("BloomPilot USB 控制已啟動")
+            .setContentTitle("Bloom Mushroom Finder USB 控制已啟動")
             .setContentText("僅接受 Android 已授權的 USB 偵錯電腦")
             .setContentIntent(open)
             .setOngoing(true)

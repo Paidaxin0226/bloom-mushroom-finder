@@ -1,6 +1,6 @@
-# BloomPilot integration architecture
+# Bloom Mushroom Finder integration architecture
 
-BloomPilot 將桌面顯示、Python 運算與 Android 生命週期工作留在最適合的 runtime，並透過本機 API 與版本化裝置協定整合成單一操作流程。
+Bloom Mushroom Finder 將桌面顯示、Python 運算與 Android 生命週期工作留在最適合的 runtime，並透過本機 API 與版本化裝置協定整合成單一操作流程。
 
 ```text
 Electron main
@@ -70,7 +70,7 @@ Android 只監聽 local-abstract socket，存取權沿用系統 ADB USB 偵錯�
 ## Verification
 
 ```powershell
-cd E:\BloomPilot
+cd E:loom-mushroom-finder
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
 cd frontend

@@ -1,6 +1,6 @@
-# BloomPilot
+# Bloom Mushroom Finder
 
-BloomPilot 是一套以 Electron + React/TypeScript 為桌面介面、FastAPI + WebSocket 為本機橋接層、Python 為自動化與 YOLO 核心的 Windows／Android 整合工具。
+Bloom Mushroom Finder 是一套以 Electron + React/TypeScript 為桌面介面、FastAPI + WebSocket 為本機橋接層、Python 為自動化與 YOLO 核心的 Windows／Android 整合工具。
 
 同一個桌面視窗內包含 Android 定位與步數控制、座標序列辨識、ADB 畫面擷取、每月活動菇模型流程及自動搜尋辨識。桌面介面統一使用 Electron；Python 核心不依賴 Tkinter。
 
@@ -24,17 +24,17 @@ BloomPilot 是一套以 Electron + React/TypeScript 為桌面介面、FastAPI + 
 
 ## 快速開始
 
-第一次或平常使用都可直接雙擊 `啟動BloomPilot控制中心.bat`。啟動器會依需要建立 Python `.venv`、安裝鎖定依賴與前端套件，接著由 Electron 啟動只監聽本機的 FastAPI 後端。
+第一次或平常使用都可直接雙擊 `啟動BloomMushroomFinder控制中心.bat`。啟動器會依需要建立 Python `.venv`、安裝鎖定依賴與前端套件，接著由 Electron 啟動只監聽本機的 FastAPI 後端。
 
 ```powershell
 # 安裝／修復全部環境
 .\安裝環境.bat
 
 # 啟動 Electron 控制中心
-.\啟動BloomPilot控制中心.bat
+.\啟動BloomMushroomFinder控制中心.bat
 
 # 只檢查環境、後端 import 與 TypeScript 型別
-.\啟動BloomPilot控制中心.bat --check
+.\啟動BloomMushroomFinder控制中心.bat --check
 
 ```
 
@@ -64,7 +64,7 @@ Python 共用功能依責任拆分：`phone_tools.py` 管理 ADB/scrcpy 工具�
 ## 專案結構
 
 ```text
-BloomPilot/
+bloom-mushroom-finder/
 ├─ frontend/                   Electron + React/TypeScript + Vite 桌面 UI
 ├─ bloompilot/
 │  ├─ web/                     FastAPI、WebSocket、工作與裝置 session
@@ -82,7 +82,7 @@ BloomPilot/
 ├─ config.yaml                 資料、訓練與辨識預設值
 ├─ pyproject.toml              Python 專案與後端 entry point
 ├─ uv.lock                     Python 鎖定依賴
-└─ 啟動BloomPilot控制中心.bat  Windows 桌面入口
+└─ 啟動BloomMushroomFinder控制中心.bat  Windows 桌面入口
 ```
 
 ## 資料集合成速度
@@ -128,10 +128,10 @@ BloomPilot/
 
 1. 使用 `android/tools/build-android-release.ps1` 建置並安裝簽名 release APK。
 2. 手機允許 USB 偵錯；Android App 啟動時會自動開啟「電腦 USB 控制」。
-3. Android 系統授權這台電腦進行 USB 偵錯後，BloomPilot 啟動時會自動連接上次使用的手機；首次使用且只有一台可用裝置時也會直接連接。多台裝置且沒有使用紀錄時才需要手動選擇。
+3. Android 系統授權這台電腦進行 USB 偵錯後，Bloom Mushroom Finder 啟動時會自動連接上次使用的手機；首次使用且只有一台可用裝置時也會直接連接。多台裝置且沒有使用紀錄時才需要手動選擇。
 4. 「裝置控制」會鏡像 Android 的定位、步數、Apps 與連線四頁；手機地圖長按選單在桌面改用滑鼠右鍵。也可到「手機辨識」建立自動搜尋／座標序列辨識。
 
-手機辨識進入安全暫停後，會自動開啟「BloomPilot 手機滑鼠控制」鏡像視窗。左鍵點擊等同觸控、拖曳等同滑動，也可直接用電腦鍵盤輸入；若手動關閉視窗，可按「重新開啟手機控制」。繼續或停止辨識時視窗會自動關閉，繼續前仍會回注暫停前的搜尋位置並重啟遊戲。
+手機辨識進入安全暫停後，會自動開啟「Bloom Mushroom Finder 手機滑鼠控制」鏡像視窗。左鍵點擊等同觸控、拖曳等同滑動，也可直接用電腦鍵盤輸入；若手動關閉視窗，可按「重新開啟手機控制」。繼續或停止辨識時視窗會自動關閉，繼續前仍會回注暫停前的搜尋位置並重啟遊戲。
 
 電腦透過 ADB dynamic forward 連接 Android local-abstract socket，不會開放 LAN 控制埠。定位、路線、收藏、步數、Hook、診斷、Relay、浮動控制與可攜式備份直接讀寫手機狀態，不會在桌面建立第二套資料。命中資料會保存類別、信心、框座標與當下經緯度，也可同步加入 Android 收藏。
 
@@ -167,4 +167,4 @@ Android 只應散布 release 工具產生、並通過憑證指紋驗證的 APK�
 
 ## Disclaimer
 
-BloomPilot 是獨立、非官方的個人研究與自動化專案，與 Nintendo、Niantic 或 The Pikmin Company 無關。使用者需自行遵守所使用軟體及服務的條款與政策。
+Bloom Mushroom Finder 是獨立、非官方的個人研究與自動化專案，與 Nintendo、Niantic 或 The Pikmin Company 無關。使用者需自行遵守所使用軟體及服務的條款與政策。

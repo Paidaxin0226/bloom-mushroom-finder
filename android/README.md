@@ -102,7 +102,7 @@ long-press quick actions are exposed as a desktop right-click menu.
 1. Install the signed Android release and connect the phone with USB debugging.
 2. Open **連線** in the Android app.
 3. Under **電腦 USB 控制**, tap **啟動 USB 控制**.
-4. In BloomPilot Control Center, open **裝置控制** and select the authorized
+4. In Bloom Mushroom Finder Control Center, open **裝置控制** and select the authorized
    USB-debugging device. The desktop uses Android's existing ADB authorization;
    no separate pairing code is required.
 

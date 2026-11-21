@@ -5,6 +5,17 @@ const http = require('http')
 const net = require('net')
 const path = require('path')
 
+// Reuse the existing desktop profile so Chromium preferences survive the rename.
+const appData = app.getPath('appData')
+const previousPackagedProfile = path.join(appData, 'BloomPilot')
+const previousDesktopProfile = path.join(appData, 'bloompilot-desktop')
+const previousProfile = app.isPackaged && fs.existsSync(previousPackagedProfile)
+  ? previousPackagedProfile
+  : previousDesktopProfile
+if (fs.existsSync(previousProfile)) {
+  app.setPath('userData', previousProfile)
+}
+
 const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.exit(0)
 
@@ -32,7 +43,7 @@ function allocatePort() {
 
 function backendCommand(port) {
   if (app.isPackaged) {
-    const executable = path.join(process.resourcesPath, 'backend', 'bloompilot-backend.exe')
+    const executable = path.join(process.resourcesPath, 'backend', 'bloom-mushroom-finder-backend.exe')
     return { executable, args: ['--host', '127.0.0.1', '--port', String(port)], cwd: path.dirname(executable) }
   }
   const root = projectRoot()
@@ -47,7 +58,7 @@ function backendCommand(port) {
 function startBackend(port) {
   const command = backendCommand(port)
   if (!fs.existsSync(command.executable)) {
-    dialog.showErrorBox('BloomPilot backend missing', `找不到 Python backend：\n${command.executable}`)
+    dialog.showErrorBox('Bloom Mushroom Finder backend missing', `找不到 Python backend：\n${command.executable}`)
     app.quit()
     return
   }
@@ -112,7 +123,7 @@ function registerIpc() {
   ipcMain.handle('import-geo-sequence', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
-      filters: [{ name: 'BloomPilot 座標序列', extensions: ['json'] }],
+      filters: [{ name: 'Bloom Mushroom Finder 座標序列', extensions: ['json'] }],
     })
     if (result.canceled) return null
     const selectedPath = result.filePaths[0]
@@ -128,7 +139,7 @@ function registerIpc() {
     if (Buffer.byteLength(text, 'utf8') > MAX_GEO_SEQUENCE_FILE_BYTES) throw new Error('座標序列資料不能超過 32 MB。')
     const result = await dialog.showSaveDialog(mainWindow, {
       defaultPath: `${safeName.replace(/\.json$/i, '')}.json`,
-      filters: [{ name: 'BloomPilot 座標序列', extensions: ['json'] }],
+      filters: [{ name: 'Bloom Mushroom Finder 座標序列', extensions: ['json'] }],
     })
     if (result.canceled || !result.filePath) return { ok: false }
     await fs.promises.writeFile(result.filePath, text + '\n', 'utf8')
@@ -155,7 +166,7 @@ async function createWindow() {
     session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
       try {
         if (osmHosts.has(new URL(details.url).hostname)) {
-          details.requestHeaders['User-Agent'] = `BloomPilot/${app.getVersion()}`
+          details.requestHeaders['User-Agent'] = `BloomMushroomFinder/${app.getVersion()}`
         }
       } catch { /* ignore non-URL */ }
       callback({ requestHeaders: details.requestHeaders })
@@ -167,7 +178,7 @@ async function createWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 680,
-    title: 'BloomPilot',
+    title: 'Bloom Mushroom Finder',
     backgroundColor: '#0a0c12',
     show: false,
     webPreferences: {

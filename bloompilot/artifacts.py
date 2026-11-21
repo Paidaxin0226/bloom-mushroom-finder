@@ -601,7 +601,7 @@ def _print_table(artifacts: Iterable[Artifact]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="BloomPilot 產物盤點與安全管理")
+    parser = argparse.ArgumentParser(description="Bloom Mushroom Finder 產物盤點與安全管理")
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     subparsers = parser.add_subparsers(dest="command", required=True)
     list_parser = subparsers.add_parser("list", help="列出資料集、run 與模型")

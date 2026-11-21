@@ -165,7 +165,7 @@
         <service
             android:name=".PikminGestureAccessibilityService"
             android:exported="true"
-            android:label="BloomPilot ADB 地圖手勢"
+            android:label="Bloom Mushroom Finder ADB 地圖手勢"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

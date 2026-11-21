@@ -312,7 +312,7 @@ class UsbDeviceController:
                                 "v": PROTOCOL_VERSION,
                                 "type": "pair",
                                 "id": _request_id(),
-                                "client": "BloomPilot Control Center",
+                                "client": "Bloom Mushroom Finder Control Center",
                             },
                             deadline=deadline,
                         )

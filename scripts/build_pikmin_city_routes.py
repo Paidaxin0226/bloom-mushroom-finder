@@ -637,7 +637,7 @@ def main(args: argparse.Namespace) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="產生可匯入 BloomPilot 的全球城市搜尋路線。")
+    result = argparse.ArgumentParser(description="產生可匯入 Bloom Mushroom Finder 的全球城市搜尋路線。")
     result.add_argument("--city-archive", default=str(DEFAULT_CITY_ARCHIVE))
     result.add_argument("--country-info", default=str(DEFAULT_COUNTRY_INFO))
     result.add_argument("--freedom-scores", default=str(DEFAULT_FREEDOM_SCORES))

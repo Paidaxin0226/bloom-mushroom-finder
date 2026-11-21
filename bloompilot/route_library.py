@@ -196,7 +196,7 @@ class RouteLibrary:
     def route_path(self, relative_path: str) -> Path:
         path = self._resolve(relative_path)
         if self._summary(path) is None:
-            raise ValueError("指定的 JSON 不是 BloomPilot 座標序列。")
+            raise ValueError("指定的 JSON 不是 Bloom Mushroom Finder 座標序列。")
         return path
 
     def waypoints(self, relative_path: str) -> list[GeoRecognitionWaypoint]:
@@ -317,6 +317,6 @@ class RouteLibrary:
                 raise ValueError("內建專案序列不能刪除；修改後請另存為自訂序列。")
             summary = self._summary(path)
             if summary is None:
-                raise ValueError("指定的 JSON 不是 BloomPilot 座標序列。")
+                raise ValueError("指定的 JSON 不是 Bloom Mushroom Finder 座標序列。")
             path.unlink()
             return summary

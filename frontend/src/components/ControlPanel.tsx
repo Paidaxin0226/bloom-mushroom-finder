@@ -52,7 +52,7 @@ function downloadText(name: string, text: string, type = 'application/json') {
 }
 
 function routeGpx(points: Coordinate[]) {
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="BloomPilot"><rte><name>LocWarp route</name>${points.map((point) => `<rtept lat="${point.lat}" lon="${point.lng}"/>`).join('')}</rte></gpx>`
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Bloom Mushroom Finder"><rte><name>LocWarp route</name>${points.map((point) => `<rtept lat="${point.lat}" lon="${point.lng}"/>`).join('')}</rte></gpx>`
 }
 
 function routeKml(points: Coordinate[]) {

@@ -9,7 +9,7 @@ import org.json.JSONObject;
  * Short-lived, USB-controlled map-intent capture lease.
  *
  * While a lease is active MapIntentProxyActivity must consume map intents and
- * expose their coordinate to BloomPilot without changing the simulated
+ * expose their coordinate to Bloom Mushroom Finder without changing the simulated
  * location. The expiry is deliberately persisted so a disconnected desktop
  * process cannot leave interception in read-only mode forever.
  */

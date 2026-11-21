@@ -58,7 +58,7 @@ assert create_app() is not None
         with (ROOT / "pyproject.toml").open("rb") as handle:
             project = tomllib.load(handle)["project"]
         self.assertFalse(project.get("gui-scripts"))
-        self.assertEqual(project["scripts"]["bloompilot-backend"], "bloompilot.web.server:main")
+        self.assertEqual(project["scripts"]["bloom-mushroom-finder-backend"], "bloompilot.web.server:main")
 
 
 if __name__ == "__main__":

@@ -204,7 +204,7 @@ class MonthlyWorkflowStore:
         if not source.is_file() or source.suffix.casefold() != ".pt":
             raise FileNotFoundError(f"找不到可用的常駐模型權重：{source}")
         if not source.is_relative_to(self.project_root):
-            raise ValueError("常駐模型必須來自 BloomPilot 專案。")
+            raise ValueError("常駐模型必須來自 Bloom Mushroom Finder 專案。")
         self.resident_root.mkdir(parents=True, exist_ok=True)
         destination = self.resident_root / "current.pt"
         temporary = self.resident_root / f".current.{os.getpid()}.tmp"
